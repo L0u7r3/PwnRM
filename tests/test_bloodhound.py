@@ -19,7 +19,7 @@ def invoke(args):
 
 class TestBloodhoundModule(unittest.TestCase):
     def test_group_selector_only_enables_groups(self):
-        result, script = invoke(["-c", "Group"])
+        result, script = invoke(["--collection", "Group"])
         self.assertEqual(result["methods"], ["group"])
         self.assertIn("$doGroups = $true", script)
         self.assertIn("$doSessions = $false", script)
@@ -31,7 +31,7 @@ class TestBloodhoundModule(unittest.TestCase):
 
     def test_unimplemented_method_is_rejected(self):
         shell = MagicMock()
-        result = BloodhoundModule().run(shell, ["-c", "LocalAdmin"])
+        result = BloodhoundModule().run(shell, ["--collection", "LocalAdmin"])
         self.assertEqual(result["status"], "error")
         shell.run_with_interrupt.assert_not_called()
 

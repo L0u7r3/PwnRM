@@ -19,14 +19,14 @@ def get_script(args):
 
 class TestKerberosModule(unittest.TestCase):
     def test_selector_controls_sections(self):
-        result, script = get_script(["--dmsa", "--diamond"])
-        self.assertEqual(result["selected"], ["--diamond", "--dmsa"])
+        result, script = get_script(["dmsa", "diamond"])
+        self.assertEqual(result["selected"], ["diamond", "dmsa"])
         self.assertIn("$doDmsa = $true", script)
         self.assertIn("$doDiamond = $true", script)
         self.assertIn("$doRoast = $false", script)
 
     def test_server_2025_dmsa_schema_is_queried(self):
-        _, script = get_script(["--dmsa"])
+        _, script = get_script(["dmsa"])
         self.assertIn("objectClass=msDS-DelegatedManagedServiceAccount", script)
         self.assertIn("msDS-ManagedAccountPrecededByLink", script)
         self.assertIn("msDS-DelegatedMSAState", script)

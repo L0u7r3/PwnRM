@@ -11,20 +11,22 @@ class KerberosModule(BaseModule):
     description = "Kerberos exposure triage (SPN/AS-REP candidates, RBCD, dMSA and Diamond prerequisites)"
     author = "uziii2208"
     options = {
-        "--roast": {"desc": "Enumerate enabled user SPNs and their advertised encryption types"},
-        "--asrep": {"desc": "Enumerate accounts vulnerable to AS-REP roasting (DONT_REQ_PREAUTH)"},
-        "--rbcd": {"desc": "Enumerate Resource-Based Constrained Delegation (RBCD) targets"},
-        "--dmsa": {"desc": "Audit Server 2025 Delegated Managed Service Accounts (dMSA)"},
-        "--diamond": {"desc": "Display the current domain prerequisites required for Diamond Ticket tooling"},
+        "roast": {"desc": "Enumerate enabled user SPNs and their advertised encryption types"},
+        "asrep": {"desc": "Enumerate accounts vulnerable to AS-REP roasting (DONT_REQ_PREAUTH)"},
+        "rbcd": {"desc": "Enumerate Resource-Based Constrained Delegation (RBCD) targets"},
+        "dmsa": {"desc": "Audit Server 2025 Delegated Managed Service Accounts (dMSA)"},
+        "diamond": {"desc": "Display the current domain prerequisites required for Diamond Ticket tooling"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
+        legacy_modes = {f"--{mode}": mode for mode in self.options}
+        normalized = [legacy_modes.get(arg.lower(), arg.lower()) for arg in args]
         valid = set(self.options)
-        unknown = [arg for arg in args if arg not in valid]
+        unknown = [arg for arg in normalized if arg not in valid]
         if unknown:
             shell.write_warning(f"  [-] Unknown Kerberos option(s): {', '.join(unknown)}")
             return {"status": "error", "error": "invalid options"}
-        selected = set(args) if args else {"--roast", "--asrep", "--rbcd", "--dmsa"}
+        selected = set(normalized) if normalized else {"roast", "asrep", "rbcd", "dmsa"}
         shell.write_info(c(M + BLD, "  [*] PwnRM Kerberos Suite — initializing Kerberos triage..."))
 
         ps = r"""
@@ -145,11 +147,11 @@ if ($doDiamond) {
 Write-Host "`n  [*] Kerberos triage complete." -ForegroundColor Cyan
 """
         replacements = {
-            "__DO_ROAST__": "$true" if "--roast" in selected else "$false",
-            "__DO_ASREP__": "$true" if "--asrep" in selected else "$false",
-            "__DO_RBCD__": "$true" if "--rbcd" in selected else "$false",
-            "__DO_DMSA__": "$true" if "--dmsa" in selected else "$false",
-            "__DO_DIAMOND__": "$true" if "--diamond" in selected else "$false",
+            "__DO_ROAST__": "$true" if "roast" in selected else "$false",
+            "__DO_ASREP__": "$true" if "asrep" in selected else "$false",
+            "__DO_RBCD__": "$true" if "rbcd" in selected else "$false",
+            "__DO_DMSA__": "$true" if "dmsa" in selected else "$false",
+            "__DO_DIAMOND__": "$true" if "diamond" in selected else "$false",
         }
         for marker, value in replacements.items():
             ps = ps.replace(marker, value)

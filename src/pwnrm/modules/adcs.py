@@ -12,7 +12,7 @@ class ADCSModule(BaseModule):
     description = "ADCS CA health, template prerequisite/ACL and WSUS policy triage"
     author = "uziii2208"
     options = {
-        "-q": {"desc": "Quick scan: skip template ACLs, CA certificate parsing and WSUS policy"},
+        "--quick": {"desc": "Skip template ACLs, CA certificate parsing and WSUS policy"},
         "--template": {"desc": "Inspect one certificate template by CN"},
         "--ca": {"desc": "Inspect one Enterprise CA by CN"},
         "--alt": {"desc": "Annotate matching findings with a proposed SAN (no request is sent)"},

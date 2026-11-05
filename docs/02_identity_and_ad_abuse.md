@@ -20,7 +20,7 @@ then reports conditions useful for a manual assessment:
 Options:
 
 ```text
-!adcs -q
+!adcs --quick
 !adcs --template User
 !adcs --ca Corp-CA
 !adcs --wsus
@@ -37,15 +37,15 @@ membership, publication, CA policy, mapping policy, and an authorized request.
 
 Selectors restrict the LDAP reconnaissance performed:
 
-- `--roast`: enabled user accounts with SPNs and advertised encryption types;
-- `--asrep`: accounts with `DONT_REQ_PREAUTH`;
-- `--rbcd`: objects carrying
+- `roast`: enabled user accounts with SPNs and advertised encryption types;
+- `asrep`: accounts with `DONT_REQ_PREAUTH`;
+- `rbcd`: objects carrying
   `msDS-AllowedToActOnBehalfOfOtherIdentity`;
-- `--dmsa`: Server 2025 delegated managed service account attributes,
+- `dmsa`: Server 2025 delegated managed service account attributes,
   including `msDS-DelegatedManagedServiceAccount`,
   `msDS-DelegatedMSAState`, and
   `msDS-ManagedAccountPrecededByLink`;
-- `--diamond`: current-domain information and prerequisites needed by separate
+- `diamond`: current-domain information and prerequisites needed by separate
   ticket tooling.
 
 The module enumerates candidates. It does not request AS-REPs/TGSs, crack
@@ -60,14 +60,14 @@ The module queries computer objects for:
 - `msLAPS-EncryptedPassword` and encrypted DSRM data;
 - password-history entry counts.
 
-`-a` includes computers without readable LAPS values. `--encrypted` includes
+`all` includes computers without readable LAPS values. `encrypted` includes
 encrypted blob metadata. The module does not decrypt encrypted LAPS data; it
 reports only what the current directory identity is authorized to read.
 
 ## ACL (`!acl`)
 
 By default, the ACL module checks a fixed set of high-value objects. Use
-`--target NAME_OR_DN` for one object or `--tier0` for `adminCount=1` objects and
+`--target NAME_OR_DN` for one object or `tier0` for `adminCount=1` objects and
 GPO containers. It reports allowed ACEs containing GenericAll, GenericWrite,
 WriteDacl, WriteOwner, WriteProperty, or ExtendedRight when the trustee looks
 broad or directly relevant.
@@ -78,7 +78,7 @@ still require manual validation.
 
 ## Token (`!token`)
 
-`--privs` shows the current process token's privileges. `--list` maps visible
+`privs` shows the current process token's privileges. `list` maps visible
 processes to owners and highlights high-value identities. With no selector,
 both inventories run.
 
@@ -89,13 +89,13 @@ session identity. The former `--elevate` claim is explicitly rejected.
 
 Selectors are independently usable:
 
-- `--vault`: Windows Credential Manager/Vault metadata;
-- `--dpapi`: current-user DPAPI master-key file inventory;
-- `--history`: recent PowerShell console history;
-- `--browser`: Chrome, Edge, and Brave credential database locations;
-- `--decrypt BASE64`: `CryptUnprotectData` as the current remote user;
-- `--lsa`: stage a full LSASS minidump at a random path under `%TEMP%`;
-- `--lsa --lsa-output C:\absolute\path.dmp`: choose the remote dump path.
+- `vault`: Windows Credential Manager/Vault metadata;
+- `dpapi`: current-user DPAPI master-key file inventory;
+- `history`: recent PowerShell console history;
+- `browser`: Chrome, Edge, and Brave credential database locations;
+- `decrypt BASE64`: `CryptUnprotectData` as the current remote user;
+- `lsa`: stage a full LSASS minidump at a random path under `%TEMP%`;
+- `lsa --lsa-output C:\absolute\path.dmp`: choose the remote dump path.
 
 DPAPI input is validated and limited to 4 MiB. Native output memory is released
 with `LocalFree`, and the temporary managed buffer is cleared. Artifact
@@ -112,7 +112,7 @@ or timeout.
 ## Entra (`!entra`)
 
 The default mode filters `dsregcmd /status` to device join and PRT status.
-`-s` additionally checks accessible user profiles for WAM, Azure CLI, MSAL, and
+`full` additionally checks accessible user profiles for WAM, Azure CLI, MSAL, and
 Azure PowerShell cache paths.
 
 The module reports status and paths. It does not decrypt WAM storage or extract

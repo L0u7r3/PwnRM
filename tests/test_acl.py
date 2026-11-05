@@ -23,7 +23,7 @@ class TestACLModule(unittest.TestCase):
         self.assertEqual(self.mod.name, "acl")
         self.assertIn("DACL", self.mod.description)
         self.assertIn("--target", self.mod.options)
-        self.assertIn("--tier0", self.mod.options)
+        self.assertIn("tier0", self.mod.options)
 
     def test_run_default(self):
         res = self.mod.run(self.mock_shell, [])
@@ -33,7 +33,7 @@ class TestACLModule(unittest.TestCase):
         self.assertIn("Invoke-Expression", cmd)
 
     def test_run_with_target(self):
-        res = self.mod.run(self.mock_shell, ["--target", "Domain Admins", "--tier0"])
+        res = self.mod.run(self.mock_shell, ["--target", "Domain Admins", "tier0"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
         cmd = self.mock_shell.run_with_interrupt.call_args[0][0]

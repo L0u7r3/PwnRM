@@ -18,8 +18,8 @@ class VSSModule(BaseModule):
     author = "uziii2208"
     options = {
         "--drive": {"desc": "Target drive letter (default: C:)"},
-        "--sam": {"desc": "Extract SAM and SYSTEM hives to temporary staging path"},
-        "--ntds": {"desc": "Extract active NTDS.dit and SYSTEM hive (Domain Controllers)"},
+        "sam": {"desc": "Extract SAM and SYSTEM hives to temporary staging path"},
+        "ntds": {"desc": "Extract active NTDS.dit and SYSTEM hive (Domain Controllers)"},
         "--clean": {"desc": "Compatibility flag; created shadow copies are always deleted"},
     }
 

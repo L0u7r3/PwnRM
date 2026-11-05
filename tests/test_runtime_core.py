@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pwnrm.cli as cli
 from pwnrm.core.runspace import Runspace
 from pwnrm.core.tunnel import PortForwarder
+from pwnrm.core.api import argument_parser
 from pwnrm.shell.ctrlc import CtrlCHandler
 from pwnrm.shell.pwnshell import COMMAND_REGISTRY, PwnShell
 
@@ -24,13 +25,26 @@ class TestRuntimeCore(unittest.TestCase):
             for syntax, description in commands.items()
         )
         self.assertIn("!ligolo [--remote] AGENT [ARG..]", rendered)
-        self.assertIn("!noconsolation [--capture-output|--detached]", rendered)
+        self.assertIn("!noconsolation [native|managed] [--capture-output|--detached]", rendered)
+        self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa]", rendered)
+        self.assertIn("!kerberos [roast|asrep|rbcd|dmsa|diamond]", rendered)
+        self.assertIn("!evasion [edr|amsi|etw]", rendered)
         self.assertIn("[--remote] [--timeout SEC]", rendered)
         self.assertIn("--lsa-output PATH", rendered)
+        for dashed_mode in ("--vault", "--lsa]", "--roast", "--native", "--edr", "--tier0"):
+            self.assertNotIn(dashed_mode, rendered)
         self.assertNotIn("In-band SOCKS5 proxy", rendered)
         self.assertNotIn("Full ADCS ESC1-ESC17+", rendered)
         self.assertNotIn("--elevate", rendered)
         self.assertNotIn("MS-RPRN", rendered)
+
+    def test_cli_help_uses_the_same_mode_option_convention(self):
+        epilog = argument_parser().epilog
+        self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH]", epilog)
+        self.assertIn("!noconsolation [native|managed] [--capture-output|--detached]", epilog)
+        self.assertIn("!playbook [list|run <name>|run --file PATH]", epilog)
+        self.assertNotIn("[--roast|--asrep", epilog)
+        self.assertNotIn("[--native|--managed]", epilog)
 
     @patch("builtins.print")
     def test_interactive_help_wraps_long_command_syntax(self, print_mock):
@@ -46,7 +60,7 @@ class TestRuntimeCore(unittest.TestCase):
         lines = [str(call.args[0]) for call in print_mock.call_args_list if call.args]
         syntax_index = next(
             index for index, line in enumerate(lines)
-            if "!noconsolation [--capture-output|--detached]" in line
+            if "!noconsolation [native|managed] [--capture-output|--detached]" in line
         )
         self.assertNotIn("Run managed/native PE from memory", lines[syntax_index])
         self.assertIn("Run managed/native PE from memory", lines[syntax_index + 1])

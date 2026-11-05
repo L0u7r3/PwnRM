@@ -16,7 +16,7 @@ class BloodhoundModule(BaseModule):
     description = "AD graph reconnaissance summary (users, computers, groups and local sessions)"
     author = "uziii2208"
     options = {
-        "-c": {"desc": "Methods: DCOnly, User, Computer, Group, Session, All (comma-separated)"},
+        "--collection": {"desc": "Methods: DCOnly, User, Computer, Group, Session, All (comma-separated)"},
     }
 
     _METHODS = {"dconly", "user", "computer", "group", "session", "all"}
@@ -24,8 +24,8 @@ class BloodhoundModule(BaseModule):
     def run(self, shell, args: List[str]) -> Any:
         methods = {"dconly", "session"}
         if args:
-            if len(args) != 2 or args[0] != "-c":
-                shell.write_warning("  [-] Usage: !bloodhound [-c DCOnly,User,Computer,Group,Session,All]")
+            if len(args) != 2 or args[0].lower() not in {"-c", "--collection"}:
+                shell.write_warning("  [-] Usage: !bloodhound [--collection DCOnly,User,Computer,Group,Session,All]")
                 return {"status": "error", "error": "invalid syntax"}
             methods = {part.strip().lower() for part in args[1].split(",") if part.strip()}
             unknown = methods - self._METHODS

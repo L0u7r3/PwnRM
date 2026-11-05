@@ -29,8 +29,8 @@ class TestVSSModule(unittest.TestCase):
         self.assertEqual(self.mod.name, "vss")
         self.assertIn("SAM", self.mod.description)
         self.assertIn("--drive", self.mod.options)
-        self.assertIn("--sam", self.mod.options)
-        self.assertIn("--ntds", self.mod.options)
+        self.assertIn("sam", self.mod.options)
+        self.assertIn("ntds", self.mod.options)
         self.assertIn("--clean", self.mod.options)
 
     def test_run_default_options(self):
@@ -40,7 +40,7 @@ class TestVSSModule(unittest.TestCase):
         self.assertIn("$requestedMode = 'auto'", self._script())
 
     def test_run_custom_drive_and_ntds(self):
-        res = self.mod.run(self.mock_shell, ["--drive", "D:", "--ntds"])
+        res = self.mod.run(self.mock_shell, ["--drive", "D:", "ntds"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
         script = self._script()

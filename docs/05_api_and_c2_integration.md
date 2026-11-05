@@ -38,7 +38,7 @@ args = argument_parser().parse_args([
 
 with Runspace(create_transport(args), timeout=30) as runspace:
     shell = PwnShell(runspace, target_info={"host": "dc01", "user": "operator"})
-    result = shell.repl(inputs=["whoami", "!sysinfo", "!laps --encrypted"])
+    result = shell.repl(inputs=["whoami", "!sysinfo", "!laps encrypted"])
     if result and result.get("status") in {"error", "failed", "interrupted"}:
         raise RuntimeError(result)
 ```

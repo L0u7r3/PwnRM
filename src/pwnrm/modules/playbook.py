@@ -18,21 +18,21 @@ class PlaybookModule(BaseModule):
     author = "uziii2208"
     options = {
         "--file": {"desc": "Path to playbook JSON file with conditional branching & cleanup hooks"},
-        "--list": {"desc": "List built-in operation playbooks"},
-        "--run": {"desc": "Run built-in playbook: default_triage, ad_recon, stealth_audit, smart_triage"},
+        "list": {"desc": "List built-in operation playbooks"},
+        "run": {"desc": "Run a built-in playbook or the playbook supplied with --file"},
     }
 
     BUILTIN_PLAYBOOKS = {
         "default_triage": [
             {"cmd": "!evasion"},
             {"cmd": "!sysinfo"},
-            {"cmd": "!sessions -q"},
-            {"cmd": "!shares -q"},
+            {"cmd": "!sessions --quick"},
+            {"cmd": "!shares --quick"},
             {"cmd": "!creds"},
         ],
         "ad_recon": [
             {"cmd": "!evasion"},
-            {"cmd": "!adtriage -q", "capture_as": "triage"},
+            {"cmd": "!adtriage --quick", "capture_as": "triage"},
             {"cmd": "!adcs", "when": "triage contains 'ADCS'"},
             {"cmd": "!kerberos", "when": "triage contains 'SPN'"},
             {"cmd": "!bloodhound"},
@@ -40,7 +40,7 @@ class PlaybookModule(BaseModule):
         "smart_triage": [
             {"cmd": "!evasion"},
             {"cmd": "!sysinfo", "capture_as": "sysinfo"},
-            {"cmd": "!adtriage -q", "capture_as": "triage"},
+            {"cmd": "!adtriage --quick", "capture_as": "triage"},
             {"cmd": "!adcs", "when": "triage contains 'Certificate'"},
             {"cmd": "!kerberos", "when": "triage contains 'SPN'"},
             {"cmd": "!creds"},
@@ -115,7 +115,8 @@ class PlaybookModule(BaseModule):
         return validated
 
     def run(self, shell, args: List[str]) -> Any:
-        if not args or args == ["--list"]:
+        normalized_action = args[0].lower().removeprefix("--") if args else "list"
+        if not args or (len(args) == 1 and normalized_action == "list"):
             shell.write_info(c(C + BLD, "  [*] Built-in Playbooks:"))
             for name, steps in self.BUILTIN_PLAYBOOKS.items():
                 shell.write_info(f"    - {c(Y, name)} ({len(steps)} steps)")
@@ -127,14 +128,16 @@ class PlaybookModule(BaseModule):
 
         pb_name = ""
         pb_file = ""
-        if len(args) == 2 and args[0] == "--run":
+        if len(args) == 2 and normalized_action == "run":
             pb_name = args[1]
+        elif len(args) == 3 and normalized_action == "run" and args[1] == "--file":
+            pb_file = args[2]
         elif len(args) == 2 and args[0] == "--file":
             pb_file = args[1]
         elif len(args) == 1 and args[0] in self.BUILTIN_PLAYBOOKS:
             pb_name = args[0]
         else:
-            shell.write_warning("Unknown playbook or syntax. Use !playbook --list")
+            shell.write_warning("Unknown playbook or syntax. Use !playbook list or !playbook run <name>.")
             return {"status": "error", "error": "invalid syntax"}
 
         steps = []
@@ -220,5 +223,5 @@ class PlaybookModule(BaseModule):
             shell.write_info(c(G + BLD, f"\n  [+] Playbook '{pb_name}' completed successfully."))
             return {"status": "completed", "playbook": pb_name}
 
-        shell.write_warning("Unknown playbook or syntax. Use !playbook --list")
+        shell.write_warning("Unknown playbook or syntax. Use !playbook list or !playbook run <name>.")
         return {"status": "error"}

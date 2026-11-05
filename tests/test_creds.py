@@ -23,9 +23,9 @@ def script_from(shell):
 class TestCredsModule(unittest.TestCase):
     def test_vault_only_selects_vault_section(self):
         shell = shell_mock()
-        result = CredsModule().run(shell, ["--vault"])
+        result = CredsModule().run(shell, ["vault"])
         script = script_from(shell)
-        self.assertEqual(result["selected"], ["--vault"])
+        self.assertEqual(result["selected"], ["vault"])
         self.assertIn("$doVault = $true", script)
         self.assertIn("$doDpapi = $false", script)
         self.assertIn("vaultcmd.exe", script)
@@ -33,7 +33,7 @@ class TestCredsModule(unittest.TestCase):
     def test_valid_decrypt_uses_localfree_for_crypt32_output(self):
         shell = shell_mock()
         blob = base64.b64encode(b"not-a-real-dpapi-blob").decode()
-        result = CredsModule().run(shell, ["--decrypt", blob])
+        result = CredsModule().run(shell, ["decrypt", blob])
         script = script_from(shell)
         self.assertEqual(result["status"], "completed")
         self.assertIn(f"$decryptBlob = '{blob}'", script)
@@ -42,7 +42,7 @@ class TestCredsModule(unittest.TestCase):
 
     def test_invalid_decrypt_input_is_rejected(self):
         shell = shell_mock()
-        for args in (["--decrypt"], ["--decrypt", "not base64"], ["--unknown"]):
+        for args in (["decrypt"], ["decrypt", "not base64"], ["--unknown"]):
             with self.subTest(args=args):
                 shell.reset_mock()
                 result = CredsModule().run(shell, args)
@@ -51,9 +51,9 @@ class TestCredsModule(unittest.TestCase):
 
     def test_lsa_dump_stages_unique_minidump_and_reports_hash(self):
         shell = shell_mock()
-        result = CredsModule().run(shell, ["--lsa"])
+        result = CredsModule().run(shell, ["lsa"])
         script = script_from(shell)
-        self.assertEqual(result["selected"], ["--lsa"])
+        self.assertEqual(result["selected"], ["lsa"])
         self.assertIn("$doLsa = $true", script)
         self.assertIn("pwnrm_lsass_{0}.dmp", script)
         self.assertIn("comsvcs.dll", script)
@@ -69,7 +69,7 @@ class TestCredsModule(unittest.TestCase):
         for args in (
             ["--lsa-output"],
             ["--lsa-output", "relative.dmp"],
-            ["--lsa-output", "C:\\Temp\\*.dmp", "--lsa"],
+            ["--lsa-output", "C:\\Temp\\*.dmp", "lsa"],
             ["--lsa-output", "C:\\Temp\\dump.dmp"],
         ):
             with self.subTest(args=args):
@@ -80,10 +80,15 @@ class TestCredsModule(unittest.TestCase):
 
     def test_lsa_output_is_single_quote_escaped(self):
         shell = shell_mock()
-        result = CredsModule().run(shell, ["--lsa", "--lsa-output", "C:\\Temp\\operator's.dmp"])
+        result = CredsModule().run(shell, ["lsa", "--lsa-output", "C:\\Temp\\operator's.dmp"])
         script = script_from(shell)
         self.assertEqual(result["status"], "completed")
         self.assertIn("$lsaOutput = 'C:\\Temp\\operator''s.dmp'", script)
+
+    def test_legacy_dashed_modes_remain_compatible(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["--vault"])
+        self.assertEqual(result["selected"], ["vault"])
 
 
 if __name__ == "__main__":

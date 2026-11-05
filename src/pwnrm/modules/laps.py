@@ -14,17 +14,19 @@ class LAPSModule(BaseModule):
     description = "Windows LAPS Hunter (Legacy ms-Mcs-AdmPwd & Modern Server 2025 msLAPS-Password)"
     author = "uziii2208"
     options = {
-        "-a": {"desc": "Enumerate all computers (including expired LAPS passwords)"},
-        "--encrypted": {"desc": "Filter and display modern encrypted LAPS blobs (msLAPS-EncryptedPassword)"},
+        "all": {"desc": "Enumerate all computers (including expired LAPS passwords)"},
+        "encrypted": {"desc": "Filter and display modern encrypted LAPS blobs (msLAPS-EncryptedPassword)"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
-        unknown = [arg for arg in args if arg not in {"-a", "--all", "--encrypted"}]
+        aliases = {"-a": "all", "--all": "all", "--encrypted": "encrypted"}
+        normalized = [aliases.get(arg.lower(), arg.lower()) for arg in args]
+        unknown = [arg for arg in normalized if arg not in self.options]
         if unknown:
             shell.write_warning(f"  [-] Unknown LAPS option(s): {', '.join(unknown)}")
             return {"status": "error", "error": "invalid options"}
-        show_all = "-a" in args or "--all" in args
-        filter_encrypted = "--encrypted" in args
+        show_all = "all" in normalized
+        filter_encrypted = "encrypted" in normalized
         show_encrypted_ps = "$true" if (filter_encrypted or show_all) else "$false"
         show_all_ps = "$true" if show_all else "$false"
 

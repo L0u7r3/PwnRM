@@ -195,7 +195,7 @@ class TestNoConsolationShell(unittest.TestCase):
         result = shell.ligolo(r'--remote "C:\Program Files\agent.exe" -connect 192.0.2.10:11601 -ignore-cert')
         self.assertEqual(result["status"], "completed")
         forwarded = split_args(shell.noconsolation.call_args.args[0])
-        self.assertEqual(forwarded[:4], ["--detached", "--native", "--remote", r"C:\Program Files\agent.exe"])
+        self.assertEqual(forwarded[:4], ["--detached", "native", "--remote", r"C:\Program Files\agent.exe"])
         self.assertEqual(forwarded[4:], ["-connect", "192.0.2.10:11601", "-ignore-cert"])
 
     def test_remote_payload_requires_explicit_mode(self):

@@ -22,8 +22,8 @@ class TestLAPSModule(unittest.TestCase):
     def test_module_metadata(self):
         self.assertEqual(self.mod.name, "laps")
         self.assertIn("LAPS", self.mod.description)
-        self.assertIn("-a", self.mod.options)
-        self.assertIn("--encrypted", self.mod.options)
+        self.assertIn("all", self.mod.options)
+        self.assertIn("encrypted", self.mod.options)
 
     def test_run_default(self):
         res = self.mod.run(self.mock_shell, [])
@@ -38,7 +38,7 @@ class TestLAPSModule(unittest.TestCase):
         self.assertIn('{ "Red" } else { "Green" }', script)
 
     def test_run_with_encrypted_flag(self):
-        res = self.mod.run(self.mock_shell, ["--encrypted"])
+        res = self.mod.run(self.mock_shell, ["encrypted"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
         cmd = self.mock_shell.run_with_interrupt.call_args[0][0]

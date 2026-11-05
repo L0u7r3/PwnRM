@@ -20,8 +20,8 @@ class TestTokenModule(unittest.TestCase):
     def test_module_metadata(self):
         self.assertEqual(self.mod.name, "token")
         self.assertIn("Token", self.mod.description)
-        self.assertIn("--list", self.mod.options)
-        self.assertIn("--privs", self.mod.options)
+        self.assertIn("list", self.mod.options)
+        self.assertIn("privs", self.mod.options)
         self.assertNotIn("--elevate", self.mod.options)
 
     def test_run_default(self):
@@ -32,7 +32,7 @@ class TestTokenModule(unittest.TestCase):
         self.assertIn("Invoke-Expression", cmd)
 
     def test_run_with_flags(self):
-        res = self.mod.run(self.mock_shell, ["--privs", "--list"])
+        res = self.mod.run(self.mock_shell, ["privs", "list"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
 

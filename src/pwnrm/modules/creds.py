@@ -14,13 +14,13 @@ class CredsModule(BaseModule):
     description = "Credential artifact inventory, DPAPI unprotect, and explicit LSASS dump staging"
     author = "uziii2208"
     options = {
-        "--vault": {"desc": "Enumerate Windows Credential Manager and Vault metadata"},
-        "--dpapi": {"desc": "Enumerate current-user DPAPI master-key files"},
-        "--decrypt": {"desc": "Unprotect one Base64 DPAPI blob as the current user: --decrypt <B64>"},
-        "--history": {"desc": "Display recent PowerShell console history"},
-        "--browser": {"desc": "Locate Chrome, Edge and Brave credential database artifacts"},
-        "--lsa": {"desc": "Stage a full LSASS minidump (administrator/SeDebug required)"},
-        "--lsa-output": {"desc": "Remote dump path used with --lsa: --lsa-output <PATH>"},
+        "vault": {"desc": "Enumerate Windows Credential Manager and Vault metadata"},
+        "dpapi": {"desc": "Enumerate current-user DPAPI master-key files"},
+        "decrypt": {"desc": "Unprotect one Base64 DPAPI blob as the current user: decrypt <B64>"},
+        "history": {"desc": "Display recent PowerShell console history"},
+        "browser": {"desc": "Locate Chrome, Edge and Brave credential database artifacts"},
+        "lsa": {"desc": "Stage a full LSASS minidump (administrator/SeDebug required)"},
+        "--lsa-output": {"desc": "Remote dump path used with lsa: --lsa-output <PATH>"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
@@ -29,10 +29,12 @@ class CredsModule(BaseModule):
         lsa_output = ""
         idx = 0
         while idx < len(args):
-            arg = args[idx]
-            if arg == "--decrypt":
+            raw_arg = args[idx]
+            lowered = raw_arg.lower()
+            arg = lowered[2:] if lowered in {"--vault", "--dpapi", "--decrypt", "--history", "--browser", "--lsa"} else lowered
+            if arg == "decrypt":
                 if idx + 1 >= len(args):
-                    shell.write_warning("  [-] --decrypt requires a Base64 DPAPI blob.")
+                    shell.write_warning("  [-] decrypt requires a Base64 DPAPI blob.")
                     return {"status": "error", "error": "missing DPAPI blob"}
                 decrypt_blob = args[idx + 1]
                 try:
@@ -60,19 +62,19 @@ class CredsModule(BaseModule):
                     return {"status": "error", "error": "invalid LSASS output path"}
                 idx += 2
                 continue
-            if arg in {"--vault", "--dpapi", "--history", "--browser", "--lsa"}:
+            if arg in {"vault", "dpapi", "history", "browser", "lsa"}:
                 selected.add(arg)
                 idx += 1
                 continue
-            shell.write_warning(f"  [-] Unknown credential option: {arg}")
+            shell.write_warning(f"  [-] Unknown credential mode or option: {raw_arg}")
             return {"status": "error", "error": "invalid option"}
 
-        if lsa_output and "--lsa" not in selected:
-            shell.write_warning("  [-] --lsa-output is only valid together with --lsa.")
-            return {"status": "error", "error": "LSASS output path without --lsa"}
+        if lsa_output and "lsa" not in selected:
+            shell.write_warning("  [-] --lsa-output is only valid together with the lsa mode.")
+            return {"status": "error", "error": "LSASS output path without lsa mode"}
 
         if not selected:
-            selected = {"--vault", "--dpapi", "--history", "--browser"}
+            selected = {"vault", "dpapi", "history", "browser"}
 
         shell.write_info(c(M + BLD, "  [*] PwnRM Creds Engine — scanning selected credential artifact locations..."))
 
@@ -278,12 +280,12 @@ if ($doLsa) {
 Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
 '''
         replacements = {
-            "__DO_VAULT__": "$true" if "--vault" in selected else "$false",
-            "__DO_DPAPI__": "$true" if "--dpapi" in selected else "$false",
-            "__DO_DECRYPT__": "$true" if "--decrypt" in selected else "$false",
-            "__DO_HISTORY__": "$true" if "--history" in selected else "$false",
-            "__DO_BROWSER__": "$true" if "--browser" in selected else "$false",
-            "__DO_LSA__": "$true" if "--lsa" in selected else "$false",
+            "__DO_VAULT__": "$true" if "vault" in selected else "$false",
+            "__DO_DPAPI__": "$true" if "dpapi" in selected else "$false",
+            "__DO_DECRYPT__": "$true" if "decrypt" in selected else "$false",
+            "__DO_HISTORY__": "$true" if "history" in selected else "$false",
+            "__DO_BROWSER__": "$true" if "browser" in selected else "$false",
+            "__DO_LSA__": "$true" if "lsa" in selected else "$false",
             "__DECRYPT_BLOB__": decrypt_blob,
             "__LSA_OUTPUT__": lsa_output.replace("'", "''"),
         }

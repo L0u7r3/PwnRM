@@ -16,7 +16,7 @@ class ACLModule(BaseModule):
     author = "uziii2208"
     options = {
         "--target": {"desc": "Target AD object name (default: high-value Tier-0 objects)"},
-        "--tier0": {"desc": "Perform full deep DACL scan across all Tier-0 groups, OUs, and GPOs"},
+        "tier0": {"desc": "Perform full deep DACL scan across all Tier-0 groups, OUs, and GPOs"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
@@ -32,7 +32,7 @@ class ACLModule(BaseModule):
                 target_obj = args[index + 1]
                 index += 2
                 continue
-            if arg == "--tier0":
+            if arg.lower() in {"tier0", "--tier0"}:
                 tier0_deep = True
                 index += 1
                 continue

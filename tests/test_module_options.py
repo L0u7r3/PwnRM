@@ -29,7 +29,7 @@ def fake_shell():
 class TestEvasionOptions(unittest.TestCase):
     def test_edr_only_does_not_patch_memory(self):
         shell = fake_shell()
-        result = EvasionModule().run(shell, ["--edr"])
+        result = EvasionModule().run(shell, ["edr"])
         self.assertEqual(result["status"], "completed")
         commands = [call.args[0] for call in shell.run_with_interrupt.call_args_list]
         self.assertEqual(len(commands), 1)
@@ -38,7 +38,7 @@ class TestEvasionOptions(unittest.TestCase):
 
     def test_etw_only_uses_architecture_correct_stubs(self):
         shell = fake_shell()
-        EvasionModule().run(shell, ["--etw"])
+        EvasionModule().run(shell, ["etw"])
         commands = "\n".join(call.args[0] for call in shell.run_with_interrupt.call_args_list)
         self.assertNotIn("AmsiScanBuffer", commands)
         self.assertIn("[IntPtr]::Size -eq 8", commands)
@@ -95,7 +95,7 @@ class TestEntraOptions(unittest.TestCase):
 
     def test_full_scan_walks_cloud_cache_locations(self):
         shell = fake_shell()
-        result = EntraModule().run(shell, ["-s"])
+        result = EntraModule().run(shell, ["full"])
         script = decode_payload(shell.run_with_interrupt.call_args.args[0])
         self.assertTrue(result["full_scan"])
         self.assertIn("$fullScan = $true", script)
@@ -106,7 +106,7 @@ class TestEntraOptions(unittest.TestCase):
 class TestLapsAllOption(unittest.TestCase):
     def test_all_reports_computers_without_readable_laps(self):
         shell = fake_shell()
-        result = LAPSModule().run(shell, ["-a"])
+        result = LAPSModule().run(shell, ["all"])
         script = decode_payload(shell.run_with_interrupt.call_args.args[0])
         self.assertTrue(result["all_computers"])
         self.assertIn("if ($true -and -not $legacyPwd", script)

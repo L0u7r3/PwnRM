@@ -11,15 +11,16 @@ class EntraModule(BaseModule):
     description = "Hybrid Entra ID join-state and accessible cloud-cache inventory"
     author = "uziii2208"
     options = {
-        "-s": {"desc": "Run full dsregcmd join status and WAM token probe"},
+        "full": {"desc": "Run full dsregcmd join status and WAM token probe"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
-        unknown = [arg for arg in args if arg != "-s"]
+        normalized = ["full" if arg.lower() in {"-s", "--full"} else arg.lower() for arg in args]
+        unknown = [arg for arg in normalized if arg != "full"]
         if unknown:
             shell.write_warning(f"  [-] Unknown Entra option(s): {', '.join(unknown)}")
             return {"status": "error", "error": "invalid options"}
-        full_scan = "-s" in args
+        full_scan = "full" in normalized
         full_scan_ps = "$true" if full_scan else "$false"
         shell.write_info(c(M + BLD, "  [*] PwnRM Entra Suite — running Azure AD / Hybrid Join reconnaissance..."))
 
@@ -65,7 +66,7 @@ if ($fullScan) {{
         Write-Host "  [-] No accessible WAM, Azure CLI, or Azure PowerShell cache was found." -ForegroundColor Gray
     }}
 }} else {{
-    Write-Host "`n  [*] Join-state scan complete. Use -s for the full WAM/cloud-cache probe." -ForegroundColor Gray
+    Write-Host "`n  [*] Join-state scan complete. Use 'full' for the full WAM/cloud-cache probe." -ForegroundColor Gray
 }}
 
 Write-Host "`n  [*] Entra reconnaissance complete." -ForegroundColor Cyan

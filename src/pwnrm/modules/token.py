@@ -11,20 +11,22 @@ class TokenModule(BaseModule):
     description = "Windows process Token inventory and privilege exposure audit"
     author = "uziii2208"
     options = {
-        "--list": {"desc": "List all processes with process tokens and user accounts"},
-        "--privs": {"desc": "Audit current process privileges and associated security impact"},
+        "list": {"desc": "List all processes with process tokens and user accounts"},
+        "privs": {"desc": "Audit current process privileges and associated security impact"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
+        aliases = {"--list": "list", "--privs": "privs"}
+        normalized = [aliases.get(arg.lower(), arg.lower()) for arg in args]
         valid = set(self.options)
-        unknown = [arg for arg in args if arg not in valid]
+        unknown = [arg for arg in normalized if arg not in valid]
         if unknown:
             if "--elevate" in unknown:
                 shell.write_warning("  [-] --elevate is not implemented: token reconnaissance never claims or changes identity.")
             else:
                 shell.write_warning(f"  [-] Unknown token option(s): {', '.join(unknown)}")
             return {"status": "error", "error": "invalid or unsupported options"}
-        selected = set(args) if args else {"--list", "--privs"}
+        selected = set(normalized) if normalized else {"list", "privs"}
         shell.write_info(c(M + BLD, "  [*] PwnRM Token Engine — auditing process identities and current privileges..."))
 
         ps = r"""
@@ -95,8 +97,8 @@ Write-Host "  Administrator Processes Observed : $adminProcs" -ForegroundColor $
 
 Write-Host "`n  [*] Token audit complete." -ForegroundColor Cyan
 """
-        ps = ps.replace("__DO_PRIVS__", "$true" if "--privs" in selected else "$false")
-        ps = ps.replace("__DO_LIST__", "$true" if "--list" in selected else "$false")
+        ps = ps.replace("__DO_PRIVS__", "$true" if "privs" in selected else "$false")
+        ps = ps.replace("__DO_LIST__", "$true" if "list" in selected else "$false")
         encoded = b64str(ps.encode("utf-16le"))
         cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
         if shell.run_with_interrupt(cmd, shell.write_line):

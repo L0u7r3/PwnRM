@@ -39,6 +39,16 @@ _COMPLETIONS = [
     "!download", "!upload", "!amsi", "!psrun", "!netrun", "!noconsolation",
     "!revshell", "!log", "!stoplog", "!adtriage", "!shares",
     "!sessions", "!sysinfo", "!help", "exit", "quit",
+    # canonical command modes and long options:
+    "list", "run", "switch", "save", "exec-all", "stop", "status",
+    "roast", "asrep", "rbcd", "dmsa", "diamond", "full",
+    "vault", "dpapi", "decrypt", "history", "browser", "lsa",
+    "all", "encrypted", "tier0", "privs", "sam", "ntds",
+    "webdav", "smb", "edr", "amsi", "etw", "native", "managed",
+    "--quick", "--template", "--ca", "--alt", "--wsus", "--target",
+    "--collection", "--subnet", "--ports", "--probe-auth", "--listener",
+    "--port", "--drive", "--file", "--lsa-output", "--xor", "--remote",
+    "--capture-output", "--detached", "--timeout",
     # common PS one-liners operators may want fast access to:
     "Get-Process", "Get-Service", "whoami", "ipconfig", "net user",
     "net localgroup administrators", "systeminfo", "Get-NetIPAddress",

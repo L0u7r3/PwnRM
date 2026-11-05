@@ -23,7 +23,8 @@ class TestCoerceModule(unittest.TestCase):
         self.assertEqual(self.mod.name, "coerce")
         self.assertIn("WebDAV", self.mod.description)
         self.assertIn("--listener", self.mod.options)
-        self.assertIn("--method", self.mod.options)
+        self.assertIn("webdav", self.mod.options)
+        self.assertIn("smb", self.mod.options)
         self.assertIn("--port", self.mod.options)
 
     def test_run_missing_listener(self):
@@ -33,7 +34,7 @@ class TestCoerceModule(unittest.TestCase):
         self.mock_shell.run_with_interrupt.assert_not_called()
 
     def test_run_with_listener(self):
-        res = self.mod.run(self.mock_shell, ["--listener", "10.10.10.10", "--method", "webdav", "--port", "8080"])
+        res = self.mod.run(self.mock_shell, ["webdav", "--listener", "10.10.10.10", "--port", "8080"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
         cmd = self.mock_shell.run_with_interrupt.call_args[0][0]
@@ -45,8 +46,8 @@ class TestCoerceModule(unittest.TestCase):
 
     def test_rejects_invalid_method_and_port(self):
         for args in (
-            ["--listener", "host", "--method", "invalid"],
-            ["--listener", "host", "--method", "spooler"],
+            ["invalid", "--listener", "host"],
+            ["spooler", "--listener", "host"],
             ["--listener", "host", "--port", "0"],
             ["--listener", "host", "--port", "not-a-port"],
         ):
