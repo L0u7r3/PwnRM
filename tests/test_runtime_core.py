@@ -1,6 +1,7 @@
 """Regression tests for CLI, interruption, transfer, and shell runtime behavior."""
 
 import hashlib
+import base64
 import io
 import tempfile
 import unittest
@@ -18,6 +19,30 @@ from pwnrm.shell.pwnshell import COMMAND_REGISTRY, PwnShell
 
 
 class TestRuntimeCore(unittest.TestCase):
+    def test_remote_file_memory_stream_verifies_hash_without_writing_disk(self):
+        shell = object.__new__(PwnShell)
+        shell.last_run_errors = []
+        shell.run_sync = MagicMock(side_effect=[r"C:\Temp\dump.bin", "False"])
+        shell._transfer_chunk_size = MagicMock(return_value=4096)
+        payload = b"sensitive-dump"
+        trailer = hashlib.sha256(payload).hexdigest().upper().encode()
+
+        def stream(_script, handler):
+            handler({"stdout": base64.b64encode(payload).decode()})
+            handler({"stdout": base64.b64encode(trailer).decode()})
+            return False
+
+        shell.run_with_interrupt = MagicMock(side_effect=stream)
+        result = shell.read_remote_file(r"C:\Temp\dump.bin")
+        self.assertEqual(result, bytearray(payload))
+
+    def test_remote_cleanup_is_verified(self):
+        shell = object.__new__(PwnShell)
+        shell.last_run_errors = []
+        shell.run_sync = MagicMock(return_value="False")
+        self.assertTrue(shell.delete_remote_path(r"C:\Temp\pwnrm", recursive=True))
+        self.assertIn("-Recurse", shell.run_sync.call_args.args[0])
+
     def test_interactive_help_registry_is_current_and_truthful(self):
         rendered = "\n".join(
             f"{section}\n{syntax}\n{description}"
@@ -31,6 +56,8 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertIn("!evasion [edr|amsi|etw]", rendered)
         self.assertIn("[--remote] [--timeout SEC]", rendered)
         self.assertIn("--lsa-output PATH", rendered)
+        self.assertIn("!vss [sam|ntds] [--drive C:] [--download]", rendered)
+        self.assertIn("[--lsa-output PATH] [--download]", rendered)
         for dashed_mode in ("--vault", "--lsa]", "--roast", "--native", "--edr", "--tier0"):
             self.assertNotIn(dashed_mode, rendered)
         self.assertNotIn("In-band SOCKS5 proxy", rendered)
@@ -40,7 +67,7 @@ class TestRuntimeCore(unittest.TestCase):
 
     def test_cli_help_uses_the_same_mode_option_convention(self):
         epilog = argument_parser().epilog
-        self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH]", epilog)
+        self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH] [--download]", epilog)
         self.assertIn("!noconsolation [native|managed] [--capture-output|--detached]", epilog)
         self.assertIn("!playbook [list|run <name>|run --file PATH]", epilog)
         self.assertNotIn("[--roast|--asrep", epilog)

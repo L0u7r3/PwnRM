@@ -94,20 +94,21 @@ Selectors are independently usable:
 - `history`: recent PowerShell console history;
 - `browser`: Chrome, Edge, and Brave credential database locations;
 - `decrypt BASE64`: `CryptUnprotectData` as the current remote user;
-- `lsa`: stage a full LSASS minidump at a random path under `%TEMP%`;
-- `lsa --lsa-output C:\absolute\path.dmp`: choose the remote dump path.
+- `lsa`: create, parse, and immediately remove an ephemeral LSASS minidump;
+- `lsa --lsa-output C:\absolute\path.dmp`: choose the temporary remote path;
+- `lsa --download`: additionally retain the raw dump in the local loot store.
 
 DPAPI input is validated and limited to 4 MiB. Native output memory is released
 with `LocalFree`, and the temporary managed buffer is cleared. Artifact
 inventory does not imply that the underlying secret was decrypted.
 
-LSASS staging requires an administrator context with the necessary process
+LSASS extraction requires an administrator context with the necessary process
 access (normally `SeDebugPrivilege`). Protected Process Light and endpoint
-controls can still block it. On success PwnRM prints the remote path, size,
-SHA-256, and matching `!download` command. It deliberately leaves a successful
-dump in place for acquisition; remove that sensitive remote artifact after the
-download. A partial dump and its exact `rundll32` worker are removed on failure
-or timeout.
+controls can still block it. On success PwnRM streams the dump into memory,
+parses it with pypykatz, displays credential rows, zeroes its buffer, and
+verifies deletion of the remote dump. `--download` stores a protected local raw
+copy but never leaves the remote copy in place. Partial dumps and their exact
+`rundll32` workers are removed on failure or timeout.
 
 ## Entra (`!entra`)
 

@@ -3,7 +3,7 @@
 import base64
 import re
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pwnrm.modules.creds import CredsModule
 
@@ -11,6 +11,14 @@ from pwnrm.modules.creds import CredsModule
 def shell_mock():
     shell = MagicMock()
     shell.run_with_interrupt.return_value = False
+    shell.run_sync.side_effect = lambda command: "C:\\Windows\\Temp\\" if "GetTempPath" in command else "False"
+    shell._validate_remote_path.side_effect = lambda value: value
+    shell._pse.side_effect = lambda value: str(value).replace("'", "''")
+    shell.read_remote_file.return_value = bytearray(b"minidump")
+    shell.delete_remote_path.return_value = True
+    shell.last_run_errors = []
+    shell.target_info = {"host": "DC01"}
+    shell.loot_mgr.store_artifact.return_value = "/loot/lsass.dmp"
     return shell
 
 
@@ -21,6 +29,11 @@ def script_from(shell):
 
 
 class TestCredsModule(unittest.TestCase):
+    def setUp(self):
+        parser = patch("pwnrm.modules.creds.parse_lsass_minidump", return_value=["credential-row"])
+        self.parse_lsass = parser.start()
+        self.addCleanup(parser.stop)
+
     def test_vault_only_selects_vault_section(self):
         shell = shell_mock()
         result = CredsModule().run(shell, ["vault"])
@@ -64,6 +77,9 @@ class TestCredsModule(unittest.TestCase):
         self.assertIn("& $rundll32 $comsvcsEntry MiniDump", script)
         self.assertIn("MiniDump worker timed out after 180 seconds", script)
         self.assertNotIn("Start-Process -FilePath $rundll32", script)
+        self.assertNotIn("Download with: !download", script)
+        shell.delete_remote_path.assert_called_once()
+        shell.loot_mgr.store_artifact.assert_not_called()
 
     def test_lsa_output_requires_lsa_and_absolute_safe_path(self):
         for args in (
@@ -89,6 +105,19 @@ class TestCredsModule(unittest.TestCase):
         shell = shell_mock()
         result = CredsModule().run(shell, ["--vault"])
         self.assertEqual(result["selected"], ["vault"])
+
+    def test_download_requires_lsa_mode(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["vault", "--download"])
+        self.assertEqual(result["status"], "error")
+        shell.run_with_interrupt.assert_not_called()
+
+    def test_lsa_download_retains_dump_and_still_deletes_remote_copy(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["lsa", "--download"])
+        self.assertEqual(result["downloaded"], ["/loot/lsass.dmp"])
+        shell.loot_mgr.store_artifact.assert_called_once()
+        shell.delete_remote_path.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -72,12 +72,15 @@ It should be treated as a potentially disruptive action in the Rules of
 Engagement.
 
 VSS extraction creates a shadow copy and remote staged files. Shadow deletion
-is attempted in `finally`; staged files remain until operator cleanup.
+is attempted in `finally`; PwnRM then streams the required hives, parses them
+locally, and verifies immediate removal of the remote staging directory. Raw
+local retention requires the explicit `--download` option.
 
 LSASS dump staging launches the built-in `comsvcs.dll` minidump entry point,
 creates a sensitive remote file, and may be blocked by PPL or endpoint controls.
 Failed/partial output is removed, but a successful dump intentionally remains
-until the operator downloads and deletes it.
+until PwnRM streams it for parsing and verifies its immediate deletion. Raw
+local retention requires the explicit `--download` option.
 
 No-Consolation executes a native PE loader inside a PowerShell process. An
 invalid payload, missing dependency, or loader incompatibility can terminate

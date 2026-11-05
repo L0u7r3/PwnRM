@@ -88,13 +88,13 @@ but are not the documented interface.
 | `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
 | `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
 | `!entra [full]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
-| `!creds [vault\|dpapi\|decrypt\|history\|browser\|lsa]` | Credential artifact inventory, current-user DPAPI unprotect, and explicit LSASS dump staging |
+| `!creds [vault\|dpapi\|decrypt\|history\|browser\|lsa] [--download]` | Credential artifact inventory, DPAPI unprotect, and ephemeral LSASS parsing |
 | `!laps [all\|encrypted]` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
 | `!acl [tier0] [--target NAME]` | Targeted or Tier-0 AD DACL inspection |
 | `!token [list\|privs]` | Current privilege and process-token identity inventory |
 | `!bloodhound [--collection METHODS]` | AD graph-oriented reconnaissance summary by collection method |
 | `!lateral` | Bounded IPv4 subnet service scan with optional WSMan authentication probe |
-| `!vss [sam\|ntds]` | WMI-created shadow copy and remote temporary staging of database/hive files |
+| `!vss [sam\|ntds] [--download]` | Ephemeral WMI shadow-copy extraction, local secret display, and immediate remote cleanup |
 | `!coerce [webdav\|smb\|all] --listener HOST` | Outbound WebDAV and/or SMB UNC authentication probe as the current remote identity |
 | `!evasion [edr\|amsi\|etw]` / `!amsi` | Selected AMSI/ETW in-process patching and EDR/AV inventory |
 | `!adtriage`, `!shares`, `!sessions`, `!sysinfo` | PowerShell 5.1-compatible host and AD reconnaissance |
@@ -125,8 +125,9 @@ These distinctions are deliberate and covered by regression tests:
   identity or elevate the session.
 - `!entra` locates accessible authentication artifacts but does not decrypt or
   extract a Primary Refresh Token.
-- `!vss` creates no `vssadmin.exe`/`ntdsutil.exe` process, but it does stage
-  copied hives or `ntds.dit` in a temporary directory on the remote host.
+- `!vss` creates no `vssadmin.exe`/`ntdsutil.exe` process. It briefly stages
+  copied hives or `ntds.dit`, streams them for local parsing, then verifies
+  deletion of the remote staging directory.
 - `WebSocketTransport` is retained only as an import-compatible placeholder and
   fails explicitly. Supported runspaces use HTTP(S) through pypsrp.
 
@@ -149,6 +150,11 @@ survives RunspacePool closure and returns a target PID for later cleanup.
 `--detached` and output capture are mutually exclusive. See the
 [runtime documentation](docs/03_evasion_and_runtime_opsec.md#native-and-managed-pe-execution-noconsolation)
 for native/managed and local/remote examples.
+
+SAM, NTDS and LSASS extraction streams raw artifacts into protected operator
+memory, displays decoded credential material, and immediately removes remote
+staging. Raw files are not retained locally unless `--download` is supplied;
+retained files are written mode `0600` under the structured PwnRM loot store.
 
 ## Python API
 
