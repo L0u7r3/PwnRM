@@ -39,6 +39,36 @@ class TestKerberosCCache(unittest.TestCase):
         ticket.from_asn1.assert_called_once_with(ticket_bytes)
         key_type.assert_called_once_with(23, b"session-key")
 
+    def test_loader_prefers_matching_service_ticket_over_first_tgt(self):
+        def credential(service, host, marker):
+            item = MagicMock()
+            item.ticket = {"data": marker.encode()}
+            item.__getitem__.side_effect = {
+                "server": SimpleNamespace(components=[
+                    {"data": service.encode()}, {"data": host.encode()},
+                ]),
+                "key": {"keytype": 18, "keyvalue": marker.encode()},
+            }.__getitem__
+            return item
+
+        tgt = credential("krbtgt", "LAB.LOCAL", "tgt")
+        service = credential("TERMSRV", "DC01", "service")
+        cache = MagicMock()
+        cache.principal.realm = {"data": b"LAB.LOCAL"}
+        cache.principal.components = [{"data": b"Administrator"}]
+        cache.credentials = [tgt, service]
+
+        with (
+            patch("pwnrm.core.utils.Path.exists", return_value=True),
+            patch("pwnrm.core.utils.CCache.loadFile", return_value=cache),
+            patch("pwnrm.core.utils.Ticket") as ticket_type,
+            patch("pwnrm.core.utils.Key") as key_type,
+        ):
+            load_kerberos_ccache("/tmp/test.ccache", target_host="dc01.lab.local")
+
+        ticket_type.return_value.from_asn1.assert_called_once_with(b"service")
+        key_type.assert_called_once_with(18, b"service")
+
     def test_s4u_cache_is_copied_and_hostname_is_normalized(self):
         server = SimpleNamespace(components=[
             {"data": b"TERMSRV"},

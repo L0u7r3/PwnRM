@@ -106,7 +106,10 @@ def tls_trailer_length(data_length: int, protocol: str, cipher_suite: str) -> in
 
 
 # ── ccache loader ────────────────────────────────────────────────────────────
-def load_kerberos_ccache(ccache_path: Optional[str] = None) -> Tuple[str, str, Ticket, Key]:
+def load_kerberos_ccache(
+    ccache_path: Optional[str] = None,
+    target_host: Optional[str] = None,
+) -> Tuple[str, str, Ticket, Key]:
     """
     Returns (domain, username, ticket, tgskey) from a .ccache file or
     the KRB5CCNAME environment variable.  Raises FileNotFoundError if not found.
@@ -118,7 +121,39 @@ def load_kerberos_ccache(ccache_path: Optional[str] = None) -> Tuple[str, str, T
     cc     = CCache.loadFile(path)
     domain = cc.principal.realm["data"].decode()
     user   = "/".join(c["data"].decode() for c in cc.principal.components)
-    cred   = cc.credentials[0]
+    credentials = list(cc.credentials)
+    if not credentials:
+        raise ValueError(f"ccache contains no credentials: {path!r}")
+
+    # Prefer a service ticket whose host matches the requested endpoint. A
+    # multi-entry cache commonly contains a TGT followed by an S4U ticket; using
+    # the first entry would incorrectly make Runspace request its default SPN.
+    # If no matching service ticket exists, prefer the TGT so pyspnego can
+    # obtain the endpoint ticket normally.
+    target_names = set()
+    if target_host:
+        normalized = target_host.rstrip(".").lower()
+        target_names.update({normalized, normalized.split(".", 1)[0]})
+    matching_service = []
+    tgt_credentials = []
+    for candidate in credentials:
+        try:
+            components = candidate["server"].components
+            service = components[0]["data"].decode(errors="replace").lower()
+            server_host = (
+                components[1]["data"].decode(errors="replace").rstrip(".").lower()
+                if len(components) > 1 else ""
+            )
+        except (KeyError, IndexError, AttributeError, TypeError):
+            continue
+        if service == "krbtgt":
+            tgt_credentials.append(candidate)
+        elif target_names and (
+            server_host in target_names
+            or server_host.split(".", 1)[0] in target_names
+        ):
+            matching_service.append(candidate)
+    cred = (matching_service or tgt_credentials or credentials)[0]
     ticket = Ticket()
     # CCache credentials wrap the DER ticket bytes in CountedOctetString.
     # Ticket.from_asn1() accepts the encoded bytes (or a decoded ASN.1
@@ -212,11 +247,20 @@ def load_pfx(pfx_path: str, password: Optional[str] = None) -> Tuple[str, str]:
 
     # O_CREAT | O_EXCL prevents a race between creation and write;
     # mode 0o600 ensures no other user can read the private key.
-    for path, content in ((cert_path, cert_pem), (key_path, key_pem)):
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        try:
-            os.write(fd, content)
-        finally:
-            os.close(fd)
+    try:
+        for path, content in ((cert_path, cert_pem), (key_path, key_pem)):
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                view = memoryview(content)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError(f"short write while creating {path}")
+                    view = view[written:]
+            finally:
+                os.close(fd)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
     return cert_path, key_path

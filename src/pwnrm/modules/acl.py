@@ -21,11 +21,23 @@ class ACLModule(BaseModule):
 
     def run(self, shell, args: List[str]) -> Any:
         target_obj = ""
-        tier0_deep = "--tier0" in args
-
-        for i, a in enumerate(args):
-            if a in ("-t", "--target") and i + 1 < len(args):
-                target_obj = args[i + 1]
+        tier0_deep = False
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg in ("-t", "--target"):
+                if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                    shell.write_warning("  [-] --target requires an AD object name.")
+                    return {"status": "error", "error": "missing target"}
+                target_obj = args[index + 1]
+                index += 2
+                continue
+            if arg == "--tier0":
+                tier0_deep = True
+                index += 1
+                continue
+            shell.write_warning(f"  [-] Unknown ACL option: {arg}")
+            return {"status": "error", "error": "invalid options"}
 
         target_expr = str_b64(target_obj)
         tier0_ps = "$true" if tier0_deep else "$false"
@@ -33,7 +45,7 @@ class ACLModule(BaseModule):
         shell.write_info(c(M + BLD, "  [*] PwnRM ACL Hunter — starting DACL privilege escalation audit on Active Directory objects..."))
 
         ps = f"""
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 Write-Host "`n========================================================" -ForegroundColor Cyan
 Write-Host "   PwnRM Active Directory DACL & Privilege Escalation Scout" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
@@ -42,8 +54,13 @@ $root = [adsi]"LDAP://RootDSE"
 $defaultNC = $root.defaultNamingContext
 $configNC = $root.configurationNamingContext
 
-$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$meSam = ($currentUser -split '\\\\')[-1]
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$currentUser = $currentIdentity.Name
+$currentTrustees = @($currentUser, 'Everyone', 'NT AUTHORITY\\Authenticated Users')
+foreach ($sid in $currentIdentity.Groups) {{
+    try {{ $currentTrustees += $sid.Translate([System.Security.Principal.NTAccount]).Value }} catch {{ }}
+}}
+$currentTrustees = @($currentTrustees | Select-Object -Unique)
 $targetObj = {target_expr}
 $tier0Deep = {tier0_ps}
 Write-Host "  [*] Current Identity : $currentUser" -ForegroundColor White
@@ -70,8 +87,7 @@ if ($targetObj) {{
         if ($targetResult) {{
             $targets = @($targetResult.Properties['distinguishedname'][0])
         }} else {{
-            Write-Host "  [-] Target AD object not found: $targetObj" -ForegroundColor Yellow
-            return
+            throw "Target AD object not found: $targetObj"
         }}
     }}
 }} elseif ($tier0Deep) {{
@@ -110,27 +126,37 @@ foreach ($t in $targets) {{
             $trustee = $r.IdentityReference.Value
             $rights = $r.ActiveDirectoryRights.ToString()
             $accessType = $r.AccessControlType.ToString()
+            $objectType = $r.ObjectType
 
             if ($accessType -ne "Allow") {{ continue }}
 
-            # Filter out standard benign administrative trustees unless current user is in them
-            $isDangerousRight = $rights -match "GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty|ExtendedRight"
-            $isInterestingTrustee = $trustee -match "Everyone|Authenticated Users|Domain Users|$meSam" -or
-                                     ($trustee -notmatch "SYSTEM|Domain Admins|Enterprise Admins|Exchange|Creator Owner")
+            # Report broad trustees or identities present in the current access token.
+            $highImpactExtendedRights = @(
+                [Guid]::Empty,
+                [Guid]'00299570-246d-11d0-a768-00aa006e0529',
+                [Guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2',
+                [Guid]'1131f6ad-9c07-11d1-f79f-00c04fc2dcd2',
+                [Guid]'89e95b76-444d-4c62-991a-0facbeda640c'
+            )
+            $isHighImpactExtendedRight = ($rights -match "ExtendedRight") -and ($objectType -in $highImpactExtendedRights)
+            $isDangerousRight = ($rights -match "GenericAll|GenericWrite|WriteDacl|WriteOwner|WriteProperty") -or $isHighImpactExtendedRight
+            $isInterestingTrustee = ($trustee -match "(^|\\\\)(Everyone|Authenticated Users|Domain Users)$") -or
+                                    ($currentTrustees -contains $trustee)
 
             if ($isDangerousRight -and $isInterestingTrustee) {{
                 $vulnCount++
-                Write-Host "  [!] [VULNERABLE DACL] Object: $name" -ForegroundColor Red
+                Write-Host "  [!] [HIGH-RISK ACE CANDIDATE] Object: $name" -ForegroundColor Red
                 Write-Host "      - Trustee : $trustee" -ForegroundColor Yellow
                 Write-Host "      - Rights  : $rights" -ForegroundColor Red
+                if ($objectType -ne [Guid]::Empty) {{ Write-Host "      - Object type GUID: $objectType" -ForegroundColor DarkGray }}
                 if ($rights -match "WriteDacl") {{
-                    Write-Host "      [!] CRITICAL: $trustee can modify DACL to grant themselves Full Control!" -ForegroundColor DarkRed
+                    Write-Host "      [!] Review: WriteDacl may permit an access-control change after effective-access validation." -ForegroundColor DarkRed
                 }}
                 if ($rights -match "WriteOwner") {{
-                    Write-Host "      [!] CRITICAL: $trustee can take Ownership of $name!" -ForegroundColor DarkRed
+                    Write-Host "      [!] Review: WriteOwner may permit ownership change after effective-access validation." -ForegroundColor DarkRed
                 }}
                 if ($rights -match "GenericAll") {{
-                    Write-Host "      [!] CRITICAL: $trustee has Full Control (GenericAll) over $name!" -ForegroundColor DarkRed
+                    Write-Host "      [!] Review: GenericAll is high impact; confirm inheritance, deny ACEs and group membership." -ForegroundColor DarkRed
                 }}
             }}
         }}
@@ -140,7 +166,7 @@ foreach ($t in $targets) {{
 }}
 
 Write-Host "`n[ACL Audit Summary]" -ForegroundColor Cyan
-Write-Host "  Discovered Exploitable DACL Rights: $vulnCount" -ForegroundColor $(if ($vulnCount -gt 0) {{ "Red" }} else {{ "Green" }})
+Write-Host "  High-Risk ACE Candidates: $vulnCount" -ForegroundColor $(if ($vulnCount -gt 0) {{ "Yellow" }} else {{ "Green" }})
 Write-Host "`n  [*] Active Directory DACL audit complete." -ForegroundColor Cyan
 """
         encoded = b64str(ps.encode("utf-16le"))

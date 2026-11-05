@@ -18,6 +18,8 @@ from pwnrm.core.transports import (
     CredSSPTransport,
     KerberosTransport,
     SPNEGOTransport,
+    _build_encrypted_body,
+    _unwrap_encrypted_body,
 )
 
 
@@ -36,6 +38,61 @@ class TestAuthenticationDependencies(unittest.TestCase):
             transport = create_transport(args)
         self.assertIsInstance(transport, SPNEGOTransport)
         send.assert_not_called()
+        self.assertTrue(transport.session.verify)
+
+    def test_tls_verification_can_be_explicitly_disabled(self):
+        args = argument_parser().parse_args([
+            "--no-ssl-verify", "-u", "user01", "-p", "password",
+            "https://srv01.lab.local:5986",
+        ])
+        self.assertFalse(create_transport(args).session.verify)
+
+    def test_invalid_port_and_timeout_are_rejected_by_parser(self):
+        parser = argument_parser()
+        for argv in (["--port", "0", "host"], ["--port", "70000", "host"], ["--timeout", "0", "host"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                parser.parse_args(argv)
+
+    def test_invalid_nt_hash_is_rejected(self):
+        for value in ("not-a-hash", "aa:bb", "a" * 33, "a" * 32 + ":" + "z" * 32):
+            args = argument_parser().parse_args(["-u", "user01", "-H", value, "host"])
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "NT hash"):
+                create_transport(args)
+
+    def test_conflicting_authentication_modes_are_rejected(self):
+        parser = argument_parser()
+        for argv in (
+            ["--pfx", "client.pfx", "-k", "host"],
+            ["-k", "--credssp", "host"],
+            ["--pfx", "client.pfx", "--credssp", "host"],
+        ):
+            with self.subTest(argv=argv), self.assertRaisesRegex(ValueError, "choose only one"):
+                create_transport(parser.parse_args(argv))
+
+    def test_hash_is_rejected_for_kerberos_credssp_and_certificate_auth(self):
+        nt_hash = "31d6cfe0d16ae931b73c59d7e0c089c0"
+        parser = argument_parser()
+        cases = (
+            ["-k", "-H", nt_hash, "host"],
+            ["--credssp", "-u", "user", "-p", "password", "-H", nt_hash, "host"],
+            ["--pfx", "client.pfx", "-H", nt_hash, "host"],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv), self.assertRaisesRegex(ValueError, "hash|CredSSP"):
+                create_transport(parser.parse_args(argv))
+
+    def test_lm_nt_hash_is_accepted_and_normalized(self):
+        lm_hash = "aad3b435b51404eeaad3b435b51404ee"
+        nt_hash = "31D6CFE0D16AE931B73C59D7E0C089C0"
+        args = argument_parser().parse_args(["-u", "user01", "-H", f"{lm_hash}:{nt_hash}", "host"])
+        transport = create_transport(args)
+        self.assertEqual(transport.creds.nt_hash, nt_hash.lower())
+
+    def test_pfx_defaults_to_https(self):
+        args = argument_parser().parse_args(["--pfx", "client.pfx", "host"])
+        with patch("pwnrm.core.api.load_pfx", return_value=("cert.pem", "key.pem")):
+            transport = create_transport(args)
+        self.assertEqual(transport.url, "https://host:5986/wsman")
 
     def test_ntlm_domain_and_password_reach_pypsrp(self):
         transport = SPNEGOTransport(
@@ -86,6 +143,8 @@ class TestAuthenticationDependencies(unittest.TestCase):
         runspace = Runspace(transport)
         session = runspace._wsman.transport._build_session()
         self.assertEqual(type(session.auth).__module__, "requests_credssp.credssp")
+        with self.assertRaisesRegex(TransportError, "use Runspace"):
+            transport.send(b"<soap/>")
 
     def test_basic_backend_can_be_built(self):
         transport = BasicTransport(
@@ -98,6 +157,41 @@ class TestAuthenticationDependencies(unittest.TestCase):
 
 
 class TestSPNEGORegression(unittest.TestCase):
+    def test_base_transport_rejects_http_errors(self):
+        transport = BasicTransport(
+            "http://srv01.lab.local:5985/wsman",
+            NTCredential("LAB", "user01", "password"),
+        )
+        with patch.object(transport, "_send", return_value=MagicMock(status_code=500)):
+            with self.assertRaisesRegex(TransportError, "HTTP 500"):
+                transport.send(b"<soap/>")
+
+    def test_direct_kerberos_send_fails_explicitly_before_uninitialized_wrap(self):
+        creds = KrbCredential("LAB", "user01", object(), object(), ccache="FILE:/tmp/cache")
+        transport = KerberosTransport("http://srv01.lab.local:5985/wsman", creds)
+        transport.proxy = SimpleNamespace(complete=False)
+        with self.assertRaisesRegex(TransportError, "use Runspace"):
+            transport.send(b"<soap/>")
+
+    def test_encrypted_multipart_preserves_binary_signature_and_payload(self):
+        signature = b"\x00\xffsignature"
+        ciphertext = b"\x80\x00ciphertext"
+        plaintext = b"<s:Envelope/>"
+        body = _build_encrypted_body(
+            "application/HTTP-SPNEGO-session-encrypted",
+            plaintext,
+            signature,
+            ciphertext,
+        )
+        self.assertIn(signature, body)
+        self.assertIn(ciphertext, body)
+        self.assertNotIn(repr(signature).encode(), body)
+
+        proxy = MagicMock()
+        proxy.unwrap.return_value = plaintext
+        self.assertEqual(_unwrap_encrypted_body(body, "Encrypted Boundary", proxy), plaintext)
+        proxy.unwrap.assert_called_once_with(signature, ciphertext)
+
     def test_proxy_constructor_uses_credentials_object(self):
         response = MagicMock(status_code=200)
         transport = SPNEGOTransport(

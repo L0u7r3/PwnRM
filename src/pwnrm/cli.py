@@ -7,12 +7,33 @@ import re
 import logging
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 from impacket import version
 from impacket.examples import logger
 
 from .core       import Runspace, create_transport, argument_parser
 from .shell      import PwnShell
 from .shell.ui   import _BANNER, c, DIM, Y, G, R, BLD
+
+
+def _display_host(transport, args) -> str:
+    """Return a printable host without ever echoing inline credentials."""
+    url = getattr(transport, "url", "")
+    if isinstance(url, bytes):
+        url = url.decode("utf-8", errors="replace")
+    if isinstance(url, str) and url:
+        host = urlparse(url).hostname
+        if host:
+            return host
+
+    target = getattr(args, "target", "")
+    if not isinstance(target, str) or not target:
+        return "?"
+    # Impacket-style targets place the endpoint after the final '@'.  Discard
+    # the complete credential portion before parsing the remaining endpoint.
+    endpoint = target.rsplit("@", 1)[-1]
+    parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+    return parsed.hostname or "?"
 
 
 def parse_replay_log(log_path: str) -> list[str]:
@@ -47,17 +68,21 @@ def main() -> int:
     if args.debug:
         logging.debug(version.getInstallationPath())
 
-    timeout   = int(args.timeout)
+    timeout   = args.timeout
+    command_failed = False
     try:
         transport = create_transport(args)
     except Exception as e:
         logging.error("Transport setup failed: %s", e)
         return 1
 
-    tinfo = {
-        "host": getattr(args, "target", "?"),
-        "user": getattr(args, "username", "?"),
-    }
+    creds = getattr(transport, "creds", None)
+    username = getattr(creds, "username", "") or getattr(args, "username", "") or "?"
+    domain = getattr(creds, "domain", "")
+    display_user = f"{domain}\\{username}" if domain and username != "?" else username
+    # Never reuse the raw target string here: it may contain user:password@host.
+    display_host = _display_host(transport, args)
+    tinfo = {"host": display_host, "user": display_user}
 
     try:
         with Runspace(transport, timeout) as runspace:
@@ -66,11 +91,20 @@ def main() -> int:
                 if args.replay:
                     replayed_cmds = parse_replay_log(args.replay)
                     print(c(Y + BLD, f"\n  [⚡] Dead Reckoning Replay: executing {len(replayed_cmds)} commands from {args.replay}...\n"))
-                    shell.repl(iter(replayed_cmds))
-                    print(c(G + BLD, f"\n  [+] Replay sequence completed. Entering interactive session.\n"))
+                    replay_result = shell.repl(iter(replayed_cmds))
+                    replay_failed = (
+                        isinstance(replay_result, dict)
+                        and replay_result.get("status") in {"error", "failed", "interrupted"}
+                    )
+                    command_failed = command_failed or replay_failed
+                    if replay_failed:
+                        print(c(Y + BLD, "\n  [!] Replay finished with at least one failed command. Entering interactive session.\n"))
+                    else:
+                        print(c(G + BLD, "\n  [+] Replay sequence completed. Entering interactive session.\n"))
                     shell.repl()
                 elif args.X:
-                    shell.repl(iter([args.X]))
+                    result = shell.repl(iter([args.X]))
+                    command_failed = isinstance(result, dict) and result.get("status") in {"error", "failed", "interrupted"}
                 else:
                     shell.help()
                     shell.repl()
@@ -82,7 +116,7 @@ def main() -> int:
     except Exception as e:
         logging.error("Connection failed: %s", e)
         return 1
-    return 0
+    return 1 if command_failed else 0
 
 
 if __name__ == "__main__":

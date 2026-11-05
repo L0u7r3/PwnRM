@@ -5,10 +5,13 @@ tests.test_security_guards — Security regression tests & anti-hallucination bo
 import tempfile
 import unittest
 from pathlib import Path
-from pwnrm.shell.pwnshell import PwnShell, HISTORY_EXCLUDE_PATTERN
+from pwnrm.shell.pwnshell import PwnShell, HISTORY_EXCLUDE_PATTERN, SafeFileHistory
 from pwnrm.shell.commands import build_amsi_patch, _xor_key, split_args
 from pwnrm.shell.shares import get_shares_ps
+from pwnrm.shell.adtriage import get_adtriage_ps
+from pwnrm.shell.sessions import get_sessions_ps
 from pwnrm.core.utils import strip_ansi, utfstr
+from pwnrm.core.credentials import TransportError
 from pwnrm.core.transports import WebSocketTransport
 from pwnrm.modules.playbook import PlaybookModule
 from pwnrm.cli import parse_replay_log
@@ -91,6 +94,17 @@ class TestSecurityGuards(unittest.TestCase):
         ]
         for cmd in sensitive_cmds:
             self.assertIsNotNone(HISTORY_EXCLUDE_PATTERN.search(cmd))
+        self.assertIsNone(HISTORY_EXCLUDE_PATTERN.search("Get-Process"))
+
+    def test_safe_history_does_not_retain_sensitive_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            history = SafeFileHistory(str(Path(td) / "history"))
+            history.append_string("Get-Process")
+            history.append_string("pwnrm -u Admin -p Secret123 host")
+            self.assertEqual(history.get_strings(), ["Get-Process"])
+            on_disk = (Path(td) / "history").read_text(encoding="utf-8")
+            self.assertIn("Get-Process", on_disk)
+            self.assertNotIn("Secret123", on_disk)
 
     def test_shares_single_quote_escaping(self):
         # Target list with injection attempts must be sanitized
@@ -98,6 +112,11 @@ class TestSecurityGuards(unittest.TestCase):
         ps = get_shares_ps(targets=crafted)
         self.assertIn("'host''1'", ps)
         self.assertIn("'dc01''; calc.exe; '''", ps)
+
+    def test_embedded_resources_have_completion_markers(self):
+        self.assertIn("[PWNRM:ADTRIAGE:COMPLETE]", get_adtriage_ps(quick=True))
+        self.assertIn("[PWNRM:SHARES:COMPLETE]", get_shares_ps(quick=True))
+        self.assertIn("[PWNRM:SESSIONS:COMPLETE]", get_sessions_ps(quick=True))
 
     def test_utfstr_exception_handling(self):
         # Invalid sequence should not throw unhandled exception
@@ -111,6 +130,8 @@ class TestSecurityGuards(unittest.TestCase):
         self.assertEqual(ws.session.headers.get("Connection"), "Upgrade")
         self.assertEqual(ws.session.headers.get("Sec-WebSocket-Protocol"), "soap")
         self.assertEqual(ws.session.headers.get("Sec-WebSocket-Version"), "13")
+        with self.assertRaisesRegex(TransportError, "not implemented"):
+            ws.send(b"<soap/>")
 
     def test_remote_stream_options_zero(self):
         # RemoteStreamOptions must be 0 to block supplementary ETW stream forwarding

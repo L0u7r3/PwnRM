@@ -42,6 +42,14 @@ class TestModules(unittest.TestCase):
             self.assertTrue(mgr.load_external_plugin(dummy_file))
             self.assertIsNotNone(mgr.get_module("custom"))
 
+            duplicate = Path(td) / "duplicate.py"
+            duplicate.write_text("from pwnrm.modules import BaseModule\nclass Duplicate(BaseModule):\n    name = 'adcs'\n")
+            self.assertFalse(mgr.load_external_plugin(duplicate))
+            self.assertEqual(mgr.get_module("adcs").__class__.__name__, "ADCSModule")
+
+            duplicate.chmod(0o666)
+            self.assertFalse(mgr.verify_plugin_integrity(duplicate))
+
             # Non-existent file must fail verification
             fake_file = Path(td) / "nonexistent.py"
             self.assertFalse(mgr.verify_plugin_integrity(fake_file))

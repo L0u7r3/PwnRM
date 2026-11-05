@@ -208,3 +208,4 @@ function Invoke-PwnRMShares {
 }
 
 Invoke-PwnRMShares -Quick:$([bool]::Parse('__QUICK__')) -Targets @('__TARGETS__')
+Write-Output '[PWNRM:SHARES:COMPLETE]'

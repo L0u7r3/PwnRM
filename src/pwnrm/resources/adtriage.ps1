@@ -225,3 +225,4 @@ function Invoke-PwnRMTriage {
 }
 
 Invoke-PwnRMTriage -Quick:$([bool]::Parse('__QUICK__'))
+Write-Output '[PWNRM:ADTRIAGE:COMPLETE]'

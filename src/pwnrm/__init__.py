@@ -1,8 +1,8 @@
-"""
-PwnRM — Advanced WinRM / AD Post-Exploitation Platform (2026-2027 TTPs)
+"""PwnRM — WinRM execution and authorized AD assessment toolkit.
 
-A modular Python framework and operator platform for WinRM-based post-exploitation,
-multi-session graph orchestration, in-band SOCKS5 tunneling, and Active Directory / Entra ID abuse.
+The package provides a pypsrp-backed interactive shell, multi-session command
+fan-out, direct operator-side TCP proxies, artifact handling, and focused
+Active Directory/Windows reconnaissance modules.
 """
 
 __version__ = "2.1.0"

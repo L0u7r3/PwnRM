@@ -203,11 +203,12 @@ function Invoke-PwnRMSessions {
 
     Write-Host "`n$sep" -ForegroundColor Cyan
     Write-Host "  [*] Session Scout complete. Suggested next steps:" -ForegroundColor Cyan
-    Write-Host "  [-]  RDP sessions     : inject into via token impersonation (incognito)" -ForegroundColor White
+    Write-Host "  [-]  RDP sessions     : review authorized interactive-session exposure" -ForegroundColor White
     Write-Host "  [-]  Kerberos TGT     : dump with Rubeus dump / mimikatz sekurlsa::tickets" -ForegroundColor White
     Write-Host "  [-]  MSSQL port open  : !netrun with PowerUpSQL assembly" -ForegroundColor White
-    Write-Host "  [-]  Sensitive pipes  : check SpoolSs/PrinterNightmare, PetitPotam (lsarpc)" -ForegroundColor White
+    Write-Host "  [-]  Sensitive pipes  : review exposed RPC/service interfaces" -ForegroundColor White
     Write-Host "$sep`n" -ForegroundColor Cyan
 }
 
 Invoke-PwnRMSessions -Quick:$([bool]::Parse('__QUICK__'))
+Write-Output '[PWNRM:SESSIONS:COMPLETE]'

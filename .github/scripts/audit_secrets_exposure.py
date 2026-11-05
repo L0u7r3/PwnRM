@@ -124,12 +124,40 @@ def audit_history_exclude_regex(root_dir: Path) -> List[Dict[str, Any]]:
         return findings
 
     content = pwnshell_file.read_text(encoding="utf-8", errors="replace")
-    match = re.search(r'HISTORY_EXCLUDE_PATTERN\s*=\s*re\.compile\(\s*r?["\']([^"\']+)["\']', content)
-    if not match:
+    try:
+        tree = ast.parse(content, filename=str(pwnshell_file))
+    except SyntaxError:
         return findings
 
-    pattern_str = match.group(1)
-    compiled_pat = re.compile(pattern_str, re.IGNORECASE)
+    pattern_str = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "HISTORY_EXCLUDE_PATTERN" for target in node.targets):
+            continue
+        call = node.value
+        if isinstance(call, ast.Call) and call.args:
+            arg = call.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                pattern_str = arg.value
+        break
+    if pattern_str is None:
+        return findings
+
+    try:
+        compiled_pat = re.compile(pattern_str, re.IGNORECASE)
+    except re.error as exc:
+        finding = {
+            "severity": "HIGH",
+            "file": "src/pwnrm/shell/pwnshell.py",
+            "line": 1,
+            "code_snippet": pattern_str,
+            "check_id": "CHECK-S3",
+            "message": f"HISTORY_EXCLUDE_PATTERN is invalid: {exc}",
+        }
+        findings.append(finding)
+        print(f"[{finding['severity']}] {finding['file']}:{finding['line']} - {finding['message']}")
+        return findings
 
     test_sensitive_commands = [
         "-p 'P@ssword123!'",

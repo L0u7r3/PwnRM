@@ -6,6 +6,7 @@ while PwnRM's transport layer handles mutual-TLS, Kerberos, SPNEGO, and CredSSP.
 """
 
 import logging
+import sys
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any, Generator
 
@@ -90,7 +91,7 @@ class Runspace:
             auth              = auth,
             username          = username,
             password          = password,
-            cert_validation   = False,
+            cert_validation   = bool(getattr(transport.session, "verify", True)),
             connection_timeout= timeout,
             read_timeout      = timeout,
             **extra_auth_kwargs,
@@ -115,10 +116,15 @@ class Runspace:
     # ── Context manager ──────────────────────────────────────────────────────
     def __enter__(self) -> "Runspace":
         self._wsman.__enter__()
-        self._pool = RunspacePool(self._wsman)
-        self._pool.open()
-        self.shell_id = str(self._pool.id)
-        return self
+        try:
+            self._pool = RunspacePool(self._wsman)
+            self._pool.open()
+            self.shell_id = str(self._pool.id)
+            return self
+        except Exception:
+            self._pool = None
+            self._wsman.__exit__(*sys.exc_info())
+            raise
 
     def __exit__(self, *exc):
         try:

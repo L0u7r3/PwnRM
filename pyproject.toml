@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pwnrm"
 version = "2.1.0"
-description = "Advanced WinRM / AD Post-Exploitation Platform (2026-2027 TTPs)"
+description = "WinRM shell and Active Directory assessment toolkit"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -52,9 +52,10 @@ dev = [
 pwnrm = "pwnrm.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/uziii2208/PwnRM"
-Repository = "https://github.com/uziii2208/PwnRM"
-Issues = "https://github.com/uziii2208/PwnRM/issues"
+Homepage = "https://github.com/L0u7r3/PwnRM"
+Repository = "https://github.com/L0u7r3/PwnRM"
+Issues = "https://github.com/L0u7r3/PwnRM/issues"
+Upstream = "https://github.com/uziii2208/PwnRM"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

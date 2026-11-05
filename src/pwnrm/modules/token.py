@@ -1,7 +1,4 @@
-"""
-modules.token — Windows Token Privileges & Impersonation Engine
-Audits process tokens, lists accessible high-privilege tokens (SYSTEM, Domain Admins), and provides in-memory Named Pipe reflection impersonation helpers (DuplicateTokenEx / ImpersonateNamedPipeClient) for SeImpersonate / SeAssignPrimaryToken privilege escalation.
-"""
+"""Windows process-token and privilege reconnaissance."""
 
 from typing import List, Any
 from . import BaseModule
@@ -11,25 +8,36 @@ from ..shell.commands import b64str
 
 class TokenModule(BaseModule):
     name = "token"
-    description = "Windows Token Hunter & In-Memory Impersonation Suite (SeImpersonate / DuplicateTokenEx)"
+    description = "Windows process Token inventory and privilege exposure audit"
     author = "uziii2208"
     options = {
         "--list": {"desc": "List all processes with process tokens and user accounts"},
-        "--privs": {"desc": "Audit current process privileges and actionable exploit paths"},
-        "--elevate": {"desc": "Execute in-memory Named Pipe impersonation to elevate to SYSTEM"},
+        "--privs": {"desc": "Audit current process privileges and associated security impact"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
-        shell.write_info(c(M + BLD, "  [*] PwnRM Token Engine — auditing access tokens & impersonation primitives..."))
+        valid = set(self.options)
+        unknown = [arg for arg in args if arg not in valid]
+        if unknown:
+            if "--elevate" in unknown:
+                shell.write_warning("  [-] --elevate is not implemented: token reconnaissance never claims or changes identity.")
+            else:
+                shell.write_warning(f"  [-] Unknown token option(s): {', '.join(unknown)}")
+            return {"status": "error", "error": "invalid or unsupported options"}
+        selected = set(args) if args else {"--list", "--privs"}
+        shell.write_info(c(M + BLD, "  [*] PwnRM Token Engine — auditing process identities and current privileges..."))
 
         ps = r"""
 $ErrorActionPreference = 'SilentlyContinue'
+$doPrivs = __DO_PRIVS__
+$doList = __DO_LIST__
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM Windows Token Hunter & Impersonation Suite" -ForegroundColor Cyan
+Write-Host "   PwnRM Windows Token & Privilege Audit" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # 1. Audit Current Privileges & Highlight Exploitable Rights
-Write-Host "[1. Current Process Privileges & Exploitation Vector Triage]" -ForegroundColor Yellow
+if ($doPrivs) {
+Write-Host "[1. Current Process Privileges & Exposure Triage]" -ForegroundColor Yellow
 $privs = whoami /priv 2>$null
 $privMap = @{
     "SeImpersonatePrivilege"          = "CRITICAL: Impersonate client tokens (SYSTEM escalation via Named Pipe / Potato)"
@@ -55,8 +63,10 @@ foreach ($p in $privMap.Keys) {
 if ($foundCount -eq 0) {
     Write-Host "  [-] Standard unprivileged token (no high-impact privileges present)." -ForegroundColor Gray
 }
+}
 
 # 2. Process & Token Enumeration (Find High-Value Process Targets)
+if ($doList) {
 Write-Host "`n[2. High-Value Running Process & Token Inventory]" -ForegroundColor Yellow
 $procs = Get-Process -IncludeUserName -ErrorAction SilentlyContinue
 if (-not $procs) {
@@ -79,12 +89,16 @@ foreach ($pr in $procs | Select-Object -First 30) {
 }
 
 Write-Host "`n[Token Landscape Summary]" -ForegroundColor Cyan
-Write-Host "  SYSTEM Processes Accessible        : $systemProcs" -ForegroundColor $(if ($systemProcs -gt 0) { "Green" } else { "DarkGray" })
-Write-Host "  Administrator Processes Accessible : $adminProcs" -ForegroundColor $(if ($adminProcs -gt 0) { "Green" } else { "DarkGray" })
+Write-Host "  SYSTEM Processes Observed        : $systemProcs" -ForegroundColor $(if ($systemProcs -gt 0) { "White" } else { "DarkGray" })
+Write-Host "  Administrator Processes Observed : $adminProcs" -ForegroundColor $(if ($adminProcs -gt 0) { "White" } else { "DarkGray" })
+}
 
 Write-Host "`n  [*] Token audit complete." -ForegroundColor Cyan
 """
+        ps = ps.replace("__DO_PRIVS__", "$true" if "--privs" in selected else "$false")
+        ps = ps.replace("__DO_LIST__", "$true" if "--list" in selected else "$false")
         encoded = b64str(ps.encode("utf-16le"))
         cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        shell.run_with_interrupt(cmd, shell.write_line)
-        return {"status": "completed"}
+        if shell.run_with_interrupt(cmd, shell.write_line):
+            return {"status": "interrupted"}
+        return {"status": "completed", "selected": sorted(selected)}

@@ -8,6 +8,8 @@ import json
 import time
 import stat
 import logging
+import secrets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List
@@ -65,7 +67,11 @@ class SessionManager:
         self._ensure_secure_dir()
 
     def _ensure_secure_dir(self):
+        if self.sessions_dir.is_symlink():
+            raise OSError(f"refusing to use symlinked session directory: {self.sessions_dir}")
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        if self.sessions_dir.is_symlink() or not self.sessions_dir.is_dir():
+            raise OSError(f"session path is not a real directory: {self.sessions_dir}")
         try:
             os.chmod(self.sessions_dir, stat.S_IRWXU)
             import platform
@@ -134,10 +140,9 @@ class SessionManager:
 
     def fan_out_exec(self, cmd: str) -> Dict[int, str]:
         """Execute a command across all active sessions with [S:X | Host] output labeling."""
-        results = {}
-        for sid, node in list(self.sessions.items()):
-            if not node.is_alive:
-                continue
+        active = [(sid, node) for sid, node in list(self.sessions.items()) if node.is_alive]
+
+        def execute(sid, node):
             prefix = f"[S:{sid} | {node.host}]"
             try:
                 out = []
@@ -145,14 +150,38 @@ class SessionManager:
                     if "stdout" in o:
                         for line in o["stdout"].splitlines():
                             out.append(f"{prefix} {line}")
-                results[sid] = "\n".join(out)
+                    if "error" in o:
+                        out.append(f"{prefix} [ERROR] {o['error']}")
                 node.last_active = datetime.now()
+                return sid, "\n".join(out)
             except Exception as e:
-                results[sid] = f"{prefix} [ERROR] {e}"
-        return results
+                return sid, f"{prefix} [ERROR] {e}"
+
+        if not active:
+            return {}
+        completed = {}
+        with ThreadPoolExecutor(max_workers=min(32, len(active)), thread_name_prefix="pwnrm-session") as pool:
+            futures = [pool.submit(execute, sid, node) for sid, node in active]
+            for future in as_completed(futures):
+                sid, output = future.result()
+                completed[sid] = output
+        return {sid: completed[sid] for sid, _ in active}
+
+    @staticmethod
+    def _validate_state_filename(filename: str) -> str:
+        if (
+            not filename
+            or filename in {".", ".."}
+            or "/" in filename
+            or "\\" in filename
+            or "\x00" in filename
+        ):
+            raise ValueError("session state filename must be a simple file name")
+        return filename
 
     def save_state(self, filename: str = "sessions.json") -> str:
         """Serialize and encrypt session metadata securely to disk using in-memory key."""
+        filename = self._validate_state_filename(filename)
         target_file = self.sessions_dir / filename
         data = {
             "saved_at": datetime.now().isoformat(),
@@ -161,21 +190,38 @@ class SessionManager:
         }
         raw_bytes = json.dumps(data, indent=2).encode("utf-8")
         encrypted_bytes = _SESSION_KEY.encrypt(raw_bytes)
-
-        fd = os.open(str(target_file), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        if target_file.is_symlink():
+            raise OSError(f"refusing to replace symlinked session state: {target_file}")
+        tmp_file = self.sessions_dir / f".{filename}.{secrets.token_hex(8)}.tmp"
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(str(tmp_file), flags, 0o600)
         try:
-            with open(fd, "wb") as f:
-                f.write(encrypted_bytes)
-        except Exception:
-            os.close(fd)
-            raise
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(encrypted_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_file, target_file)
+            os.chmod(target_file, 0o600)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
         return str(target_file)
 
     def load_state(self, filename: str = "sessions.json") -> dict:
         """Decrypts and loads session metadata from disk using the in-memory key."""
+        filename = self._validate_state_filename(filename)
         target_file = self.sessions_dir / filename
         if not target_file.exists():
             return {}
+        if target_file.is_symlink():
+            raise OSError(f"refusing to read symlinked session state: {target_file}")
         encrypted_bytes = target_file.read_bytes()
         decrypted_bytes = _SESSION_KEY.decrypt(encrypted_bytes)
         return json.loads(decrypted_bytes.decode("utf-8"))

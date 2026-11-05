@@ -22,7 +22,7 @@ class TestTokenModule(unittest.TestCase):
         self.assertIn("Token", self.mod.description)
         self.assertIn("--list", self.mod.options)
         self.assertIn("--privs", self.mod.options)
-        self.assertIn("--elevate", self.mod.options)
+        self.assertNotIn("--elevate", self.mod.options)
 
     def test_run_default(self):
         res = self.mod.run(self.mock_shell, [])
@@ -35,6 +35,11 @@ class TestTokenModule(unittest.TestCase):
         res = self.mod.run(self.mock_shell, ["--privs", "--list"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
+
+    def test_removed_elevation_claim_is_rejected(self):
+        res = self.mod.run(self.mock_shell, ["--elevate"])
+        self.assertEqual(res.get("status"), "error")
+        self.mock_shell.run_with_interrupt.assert_not_called()
 
 
 if __name__ == "__main__":

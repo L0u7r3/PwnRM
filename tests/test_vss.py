@@ -67,6 +67,24 @@ class TestVSSModule(unittest.TestCase):
         self.assertEqual(res, {"status": "error", "reason": "invalid_drive"})
         self.mock_shell.run_with_interrupt.assert_not_called()
 
+    def test_missing_drive_and_unknown_options_are_rejected(self):
+        for args, reason in ((["--drive"], "missing_drive"), (["--nope"], "invalid_options")):
+            with self.subTest(args=args):
+                self.mock_shell.run_with_interrupt.reset_mock()
+                res = self.mod.run(self.mock_shell, args)
+                self.assertEqual(res, {"status": "error", "reason": reason})
+                self.mock_shell.run_with_interrupt.assert_not_called()
+
+    def test_failures_are_terminating_and_cleanup_is_checked(self):
+        self.mod.run(self.mock_shell, ["sam"])
+        script = self._script()
+        self.assertIn("$ErrorActionPreference = 'Stop'", script)
+        self.assertIn('throw "SAM hive was not found', script)
+        self.assertIn("$remainingShadow", script)
+        self.assertIn("still exists after cleanup", script)
+        self.assertIn("[Guid]::NewGuid().ToString", script)
+        self.assertLess(script.index("try {"), script.index("New-Item -Path $stagingDir"))
+
 
 if __name__ == "__main__":
     unittest.main()

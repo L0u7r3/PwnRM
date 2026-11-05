@@ -1,11 +1,10 @@
-"""
-core.transports — HTTP/HTTPS & WebSocket transport layer (Basic, Cert, SPNEGO, Kerberos, CredSSP, WebSocket)
-"""
+"""HTTP/HTTPS transport configuration and legacy wire helpers."""
 
 import ssl
 import logging
 import secrets
 import hmac
+import re
 from base64    import b64decode
 from struct    import pack, unpack
 from urllib.parse import urlparse
@@ -14,10 +13,6 @@ from typing import Optional, Tuple, Callable, Any
 from requests                import Session, Request
 from requests.exceptions     import TooManyRedirects as _TooManyRedirects
 from urllib3.util       import SKIP_HEADER
-from urllib3.exceptions import InsecureRequestWarning
-from urllib3            import disable_warnings
-disable_warnings(category=InsecureRequestWarning)
-
 from pyasn1.codec.ber import encoder, decoder
 from pyasn1.type      import univ, namedtype
 
@@ -84,10 +79,10 @@ class Transport:
     def __init__(self, url: str):
         self.url     = url
         self.ssl     = urlparse(url).scheme in ("https", "wss")
+        self.timeout = 30
         self.session = Session()
         self.session.max_redirects = 0   # SECURITY: WinRM never redirects; block SSRF
         self.session.trust_env = False   # SECURITY: Ignore ambient environment proxies
-        self.session.verify = False
         self.session.headers["User-Agent"]      = SKIP_HEADER
         self.session.headers["Accept-Encoding"] = SKIP_HEADER
 
@@ -97,6 +92,8 @@ class Transport:
             if rsp.status_code == 401:
                 self._auth()
                 rsp = self._send(req)
+            if rsp.status_code >= 400:
+                raise TransportError(f"WinRM returned HTTP {rsp.status_code}")
         except _TooManyRedirects as e:
             raise TransportError(
                 f"Server issued HTTP redirect — SSRF attempt blocked: {e}"
@@ -110,10 +107,10 @@ class Transport:
         r = Request("POST", self.url, data=body,
                     headers={"Content-Type": "application/soap+xml;charset=UTF-8"})
         prep = self.session.prepare_request(r)
-        return self.session.send(prep, allow_redirects=False)
+        return self.session.send(prep, allow_redirects=False, timeout=self.timeout)
 
     def _auth(self):
-        pass
+        raise TransportError("this transport has no interactive authentication handshake")
 
 
 # ── Basic auth ────────────────────────────────────────────────────────────────
@@ -121,7 +118,8 @@ class BasicTransport(Transport):
     def __init__(self, url: str, creds: NTCredential):
         super().__init__(url)
         self.creds = creds
-        token = b64str(f"{creds.username}:{creds.password}".encode())
+        identity = f"{creds.domain}\\{creds.username}" if creds.domain else creds.username
+        token = b64str(f"{identity}:{creds.password}".encode())
         self.session.headers["Authorization"] = f"Basic {token}"
 
 
@@ -130,6 +128,51 @@ class ClientCertTransport(Transport):
     def __init__(self, url: str, cert_pem_path: str, cert_key_path: str):
         super().__init__(url)
         self.session.cert = (cert_pem_path, cert_key_path)
+
+
+def _build_encrypted_body(protocol: str, plaintext: bytes, signature: bytes, ciphertext: bytes) -> bytes:
+    """Build the binary WinRM multipart envelope used by SPNEGO/Kerberos."""
+    boundary = b"--Encrypted Boundary"
+    header = b"\r\n".join((
+        boundary,
+        b"\tContent-Type: " + protocol.encode("ascii"),
+        b"\tOriginalContent: type=application/soap+xml;charset=UTF-8;Length=" + str(len(plaintext)).encode("ascii"),
+        boundary,
+        b"\tContent-Type: application/octet-stream",
+        b"",
+    ))
+    return header + pack("<i", len(signature)) + signature + ciphertext + boundary + b"--\r\n"
+
+
+def _unwrap_encrypted_body(content: bytes, boundary: str, proxy) -> bytes:
+    """Parse and authenticate a WinRM multipart encrypted response."""
+    parts = list(filter(None, re.split(rb"--\s*" + re.escape(boundary.encode()) + rb"\r\n", content)))
+    if not parts or len(parts) % 2:
+        raise TransportError("malformed encrypted WinRM multipart response")
+    plaintext = bytearray()
+    closing = re.compile(rb"--\s*" + re.escape(boundary.encode()) + rb"--\r\n$")
+    for index in range(0, len(parts), 2):
+        metadata = parts[index].strip()
+        length_match = re.search(rb"Length=(\d+)", metadata)
+        if not length_match:
+            raise TransportError("encrypted WinRM response is missing OriginalContent length")
+        expected = int(length_match.group(1))
+        payload = closing.sub(b"", parts[index + 1])
+        payload = payload.replace(b"\tContent-Type: application/octet-stream\r\n", b"", 1)
+        if len(payload) < 4:
+            raise TransportError("encrypted WinRM response payload is truncated")
+        signature_len = unpack("<i", payload[:4])[0]
+        if signature_len < 0 or len(payload) < 4 + signature_len:
+            raise TransportError("encrypted WinRM response signature is truncated")
+        signature = payload[4:4 + signature_len]
+        ciphertext = payload[4 + signature_len:]
+        unwrapped = proxy.unwrap(signature, ciphertext)
+        if len(unwrapped) != expected:
+            raise TransportError(
+                f"encrypted WinRM response length mismatch: {len(unwrapped)} != {expected}"
+            )
+        plaintext.extend(unwrapped)
+    return bytes(plaintext)
 
 
 # ── SPNEGO (NTLM / Kerberos) ─────────────────────────────────────────────────
@@ -169,24 +212,18 @@ class SPNEGOTransport(Transport):
         if self.proxy is None:
             self._auth()
         sig, msg = self.proxy.wrap(req.encode() if isinstance(req, str) else req)
+        raw_req = req.encode() if isinstance(req, str) else req
         boundary = "Encrypted Boundary"
-        body = (
-            f"--{boundary}\r\n"
-            f"Content-Type: application/HTTP-SPNEGO-session-params\r\n"
-            f"OriginalContent: type=application/soap+xml;charset=UTF-8;Length={len(req)}\r\n"
-            f"--{boundary}\r\n"
-            f"Content-Type: application/octet-stream\r\n"
-            f"{sig}{msg}"
-            f"--{boundary}--\r\n"
-        )
+        protocol = "application/HTTP-SPNEGO-session-encrypted"
+        body = _build_encrypted_body(protocol, raw_req, sig, msg)
         r = Request("POST", self.url, data=body, headers={
-            "Content-Type": f"multipart/encrypted;protocol=\"application/HTTP-SPNEGO-session-params\";boundary=\"{boundary}\""
+            "Content-Type": f"multipart/encrypted;protocol=\"{protocol}\";boundary=\"{boundary}\""
         })
         prep = self.session.prepare_request(r)
-        resp = self.session.send(prep, allow_redirects=False)
-        parts = resp.content.split(f"--{boundary}".encode())[1:-1]
-        raw_msg = b"".join(parts[1].split(b"\r\n")[3:])
-        return self.proxy.unwrap(raw_msg[:16], raw_msg[16:])
+        resp = self.session.send(prep, allow_redirects=False, timeout=self.timeout)
+        if resp.status_code >= 400:
+            raise TransportError(f"WinRM returned HTTP {resp.status_code}")
+        return _unwrap_encrypted_body(resp.content, boundary, self.proxy)
 
 
 # ── Kerberos (GSS-API wire tokens per RFC 4121) ──────────────────────────────
@@ -222,25 +259,23 @@ class KerberosTransport(Transport):
     def send(self, req: bytes | str) -> bytes:
         if self.proxy is None:
             self._auth()
+        if not self.proxy.complete:
+            raise TransportError(
+                "direct Kerberos wire send cannot complete the AP-REP exchange; use Runspace"
+            )
         sig, msg = self.proxy.wrap(req.encode() if isinstance(req, str) else req)
+        raw_req = req.encode() if isinstance(req, str) else req
         boundary = "Encrypted Boundary"
-        body = (
-            f"--{boundary}\r\n"
-            f"Content-Type: application/HTTP-Kerberos-session-params\r\n"
-            f"OriginalContent: type=application/soap+xml;charset=UTF-8;Length={len(req)}\r\n"
-            f"--{boundary}\r\n"
-            f"Content-Type: application/octet-stream\r\n"
-            f"{sig}{msg}"
-            f"--{boundary}--\r\n"
-        )
+        protocol = "application/HTTP-Kerberos-session-encrypted"
+        body = _build_encrypted_body(protocol, raw_req, sig, msg)
         r = Request("POST", self.url, data=body, headers={
-            "Content-Type": f"multipart/encrypted;protocol=\"application/HTTP-Kerberos-session-params\";boundary=\"{boundary}\""
+            "Content-Type": f"multipart/encrypted;protocol=\"{protocol}\";boundary=\"{boundary}\""
         })
         prep = self.session.prepare_request(r)
-        resp = self.session.send(prep, allow_redirects=False)
-        parts = resp.content.split(f"--{boundary}".encode())[1:-1]
-        raw_msg = b"".join(parts[1].split(b"\r\n")[3:])
-        return self.proxy.unwrap(raw_msg[:16], raw_msg[16:])
+        resp = self.session.send(prep, allow_redirects=False, timeout=self.timeout)
+        if resp.status_code >= 400:
+            raise TransportError(f"WinRM returned HTTP {resp.status_code}")
+        return _unwrap_encrypted_body(resp.content, boundary, self.proxy)
 
 
 # ── CredSSP transport ────────────────────────────────────────────────────────
@@ -255,6 +290,9 @@ class CredSSPTransport(Transport):
         self.tls_out = ssl.MemoryBIO()
         self.tls_obj = self.tls_ctx.wrap_bio(self.tls_in, self.tls_out)
         # Authentication is performed by pypsrp when Runspace is entered.
+
+    def send(self, req: bytes | str) -> bytes:
+        raise TransportError("direct CredSSP wire send is unsupported; use Runspace")
 
     def _auth(self):
         def _send_credssp(tsreq, phase_name="handshake"):
@@ -385,9 +423,12 @@ class CredSSPTransport(Transport):
 
 # ── WebSocket Transport (MS-WSMV §2.2.9.1) ──────────────────────────────────
 class WebSocketTransport(Transport):
-    """
-    WinRM over WebSocket Transport (MS-WSMV §2.2.9.1).
-    Leverages HTTP Upgrade: websocket with subprotocol 'soap' for stealthy OPSEC tunneling.
+    """Compatibility placeholder for the former WebSocket prototype.
+
+    PwnRM does not implement WebSocket frame handling or a pypsrp WebSocket
+    backend.  Retaining the constructor avoids an import-time API break, while
+    ``send`` fails explicitly instead of treating an HTTP Upgrade probe as a
+    functional WinRM transport.
     """
     def __init__(self, url: str, creds: Optional[NTCredential] = None):
         super().__init__(url)
@@ -398,6 +439,12 @@ class WebSocketTransport(Transport):
         self.session.headers["Sec-WebSocket-Protocol"] = "soap"
         self.session.headers["Sec-WebSocket-Version"] = "13"
         self.session.headers["Sec-WebSocket-Key"] = b64str(secrets.token_bytes(16))
+
+    def send(self, req: bytes | str) -> bytes:
+        raise TransportError(
+            "WinRM-over-WebSocket is not implemented; use HTTP(S) with "
+            "SPNEGO, Kerberos, CredSSP, Basic, or client-certificate authentication"
+        )
 
     def _send(self, req: bytes | str) -> Any:
         body = req.encode("utf-8") if isinstance(req, str) else req
@@ -413,4 +460,4 @@ class WebSocketTransport(Transport):
             }
         )
         prep = self.session.prepare_request(r)
-        return self.session.send(prep, allow_redirects=False)
+        return self.session.send(prep, allow_redirects=False, timeout=self.timeout)

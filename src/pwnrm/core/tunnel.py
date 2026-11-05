@@ -1,6 +1,6 @@
 """
-core.tunnel — SOCKS5 Proxy & Port Forwarding Multiplexer
-Provides local SOCKS5 proxy (RFC 1928) and port-forwarding over PwnRM connections with thread safety and timeout controls.
+core.tunnel — Direct Local SOCKS5 Proxy & Port Forwarding
+Provides operator-side direct TCP proxying with thread safety and timeout controls.
 """
 
 import socket
@@ -14,7 +14,7 @@ from typing import Optional, Dict, Tuple
 class Socks5Server:
     """
     Lightweight RFC 1928 SOCKS5 Server.
-    Can route traffic directly or via remote execution proxies.
+    Connections originate from the operator host, not from the PSRP endpoint.
     """
     def __init__(self, bind_host: str = "127.0.0.1", bind_port: int = 1080):
         self.bind_host = bind_host
@@ -160,7 +160,7 @@ class Socks5Server:
 
 
 class PortForwarder:
-    """Manages local and remote port forwarding instances with thread safety."""
+    """Manages direct operator-side local port forwards with thread safety."""
     def __init__(self):
         self.forwards: Dict[int, dict] = {}
         self._next_id = 0

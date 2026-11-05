@@ -1,109 +1,130 @@
-"""
-modules.bloodhound — In-Memory Active Directory Graph & Session Collector
-Collects AD objects and active user sessions entirely in memory and formats results for BloodHound CE (v6 schema).
+"""Bounded Active Directory graph reconnaissance.
+
+The historical command name is retained for compatibility. This module does
+not pretend that a count-only summary is an importable BloodHound dataset.
 """
 
-import json
 from typing import List, Any
+
 from . import BaseModule
-from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
+from ..shell.ui import c, M, BLD
 from ..shell.commands import b64str
 
 
 class BloodhoundModule(BaseModule):
     name = "bloodhound"
-    description = "In-Memory Active Directory Graph & Session Collector (BloodHound CE v6 Schema)"
+    description = "AD graph reconnaissance summary (users, computers, groups and local sessions)"
     author = "uziii2208"
     options = {
-        "-c": {"desc": "Collection methods: DCOnly, Group, LocalAdmin, Session, All (default: DCOnly + Sessions)"},
+        "-c": {"desc": "Methods: DCOnly, User, Computer, Group, Session, All (comma-separated)"},
     }
 
-    def run(self, shell, args: List[str]) -> Any:
-        shell.write_info(c(M + BLD, "  [*] PwnRM In-Memory BloodHound Collector — starting LDAP & Session enumeration (CE v6 schema)..."))
+    _METHODS = {"dconly", "user", "computer", "group", "session", "all"}
 
-        ps = r"""
+    def run(self, shell, args: List[str]) -> Any:
+        methods = {"dconly", "session"}
+        if args:
+            if len(args) != 2 or args[0] != "-c":
+                shell.write_warning("  [-] Usage: !bloodhound [-c DCOnly,User,Computer,Group,Session,All]")
+                return {"status": "error", "error": "invalid syntax"}
+            methods = {part.strip().lower() for part in args[1].split(",") if part.strip()}
+            unknown = methods - self._METHODS
+            if not methods or unknown:
+                shell.write_warning(f"  [-] Unsupported collection method(s): {', '.join(sorted(unknown)) or '<empty>'}")
+                return {"status": "error", "error": "invalid collection methods"}
+
+        if "all" in methods:
+            selected = {"user", "computer", "group", "session"}
+        else:
+            selected = methods - {"dconly"}
+            if "dconly" in methods:
+                selected.update({"user", "computer", "group"})
+
+        shell.write_info(c(M + BLD, "  [*] PwnRM AD Graph Recon — starting selected LDAP/session summaries..."))
+
+        ps = r'''
 $ErrorActionPreference = 'SilentlyContinue'
+$doUsers = __DO_USERS__
+$doComputers = __DO_COMPUTERS__
+$doGroups = __DO_GROUPS__
+$doSessions = __DO_SESSIONS__
+
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM In-Memory Active Directory Graph Collector" -ForegroundColor Cyan
+Write-Host "   PwnRM Active Directory Graph Reconnaissance" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
 $domainName = if ($domain) { $domain.Name } else { $env:USERDNSDOMAIN }
 Write-Host "  [+] Current Domain : $domainName" -ForegroundColor Green
 
-# 1. Enumerate Users
-$userSearcher = New-Object System.DirectoryServices.DirectorySearcher
-$userSearcher.Filter = "(&(objectClass=user)(!(objectClass=computer)))"
-$userSearcher.PageSize = 500
-$users = $userSearcher.FindAll()
-Write-Host "  [+] Discovered $($users.Count) User accounts in Active Directory." -ForegroundColor White
+if ($doUsers) {
+    $searcher = New-Object System.DirectoryServices.DirectorySearcher
+    $searcher.Filter = "(&(objectClass=user)(!(objectClass=computer)))"
+    $searcher.PageSize = 500
+    $users = $searcher.FindAll()
+    Write-Host "  [+] User accounts : $($users.Count)" -ForegroundColor White
+}
 
-# 2. Enumerate Computers / Domain Controllers
-$compSearcher = New-Object System.DirectoryServices.DirectorySearcher
-$compSearcher.Filter = "(objectClass=computer)"
-$compSearcher.PageSize = 500
-$comps = $compSearcher.FindAll()
-Write-Host "  [+] Discovered $($comps.Count) Computer accounts." -ForegroundColor White
+if ($doComputers) {
+    $searcher = New-Object System.DirectoryServices.DirectorySearcher
+    $searcher.Filter = "(objectClass=computer)"
+    $searcher.PageSize = 500
+    $computers = $searcher.FindAll()
+    Write-Host "  [+] Computer accounts : $($computers.Count)" -ForegroundColor White
+}
 
-# 3. Enumerate Security Groups
-$grpSearcher = New-Object System.DirectoryServices.DirectorySearcher
-$grpSearcher.Filter = "(objectClass=group)"
-$grpSearcher.PageSize = 500
-$grps = $grpSearcher.FindAll()
-Write-Host "  [+] Discovered $($grps.Count) Domain Groups." -ForegroundColor White
-
-# 4. Highlight High-Value Groups (Domain Admins, Enterprise Admins, Schema Admins, Account Operators)
-Write-Host "`n[High-Value Group Membership Snapshot]" -ForegroundColor Yellow
-foreach ($g in $grps) {
-    $gname = $g.Properties["samaccountname"][0]
-    if ($gname -match "Domain Admins|Enterprise Admins|Schema Admins|Account Operators|Backup Operators") {
-        $members = $g.Properties["member"]
-        Write-Host "  [*] Group: $gname ($($members.Count) members)" -ForegroundColor Yellow
-        foreach ($m in $members) {
-            $cn = ($m -split ",")[0]
-            Write-Host "      - $cn" -ForegroundColor Gray
+if ($doGroups) {
+    $searcher = New-Object System.DirectoryServices.DirectorySearcher
+    $searcher.Filter = "(objectClass=group)"
+    $searcher.PageSize = 500
+    $groups = $searcher.FindAll()
+    Write-Host "  [+] Domain groups : $($groups.Count)" -ForegroundColor White
+    Write-Host "`n[High-value Group Membership Snapshot]" -ForegroundColor Yellow
+    foreach ($group in $groups) {
+        $name = $group.Properties['samaccountname'][0]
+        if ($name -match '^(Domain Admins|Enterprise Admins|Schema Admins|Account Operators|Backup Operators)$') {
+            $members = $group.Properties['member']
+            Write-Host "  [*] $name ($($members.Count) members)" -ForegroundColor Yellow
+            foreach ($member in $members) { Write-Host "      - $member" -ForegroundColor Gray }
         }
     }
 }
 
-# 5. Enumerate Active Logon Sessions for BloodHound Attack Paths (LogonType: 2=Interactive, 3=Network, 10=RemoteInteractive)
-Write-Host "`n[Active Logon Sessions for Attack Path Triangulation]" -ForegroundColor Yellow
-$sessions = @(Get-WmiObject Win32_LogonSession -ErrorAction SilentlyContinue |
-    Where-Object {$_.LogonType -in @(2,3,10)} |
-    ForEach-Object {
-        $logonId = $_.LogonId
-        $logonType = $_.LogonType
-        $lu = Get-WmiObject -Query "ASSOCIATORS OF {Win32_LogonSession.LogonId='$logonId'} WHERE AssocClass=Win32_LoggedOnUser" -ErrorAction SilentlyContinue
-        if ($lu -and $lu.Name -notmatch "DWM-|UMFD-|LOCAL SERVICE|NETWORK SERVICE|SYSTEM|^$") {
-            [PSCustomObject]@{
-                UserName     = "$($lu.Domain)\$($lu.Name)"
-                ComputerName = "$env:COMPUTERNAME.$domainName"
-                LogonType    = $logonType
-            }
-        }
-    } | Where-Object { $_ -ne $null })
-
-Write-Host "  [+] Discovered $($sessions.Count) Active Logon Sessions on $env:COMPUTERNAME" -ForegroundColor Green
-foreach ($s in $sessions) {
-    $typeStr = switch ($s.LogonType) { 2 {"Interactive"} 3 {"Network"} 10 {"RDP/Remote"} default {$s.LogonType} }
-    Write-Host "      - $($s.UserName) on $($s.ComputerName) [$typeStr]" -ForegroundColor Gray
+if ($doSessions) {
+    Write-Host "`n[Local Interactive/Network/RDP Sessions]" -ForegroundColor Yellow
+    $sessions = @(Get-CimInstance Win32_LogonSession -ErrorAction SilentlyContinue |
+        Where-Object { $_.LogonType -in @(2, 3, 10) } |
+        ForEach-Object {
+            $session = $_
+            Get-CimAssociatedInstance -InputObject $session -Association Win32_LoggedOnUser -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch '^(DWM-|UMFD-)' -and $_.Name } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        User = "$($_.Domain)\$($_.Name)"
+                        LogonType = $session.LogonType
+                    }
+                }
+        })
+    $sessions | Sort-Object User, LogonType -Unique | ForEach-Object {
+        Write-Host "  [*] $($_.User) (type $($_.LogonType)) on $env:COMPUTERNAME" -ForegroundColor Gray
+    }
+    Write-Host "  [+] Local session records : $($sessions.Count)" -ForegroundColor White
 }
 
-# Output BloodHound CE v6 meta headers format
-Write-Host "`n[BloodHound CE v6 Meta Summary]" -ForegroundColor Cyan
-$metaUsers = @{ "meta" = @{ "type" = "users"; "count" = $users.Count; "version" = 6 } } | ConvertTo-Json -Compress
-$metaComps = @{ "meta" = @{ "type" = "computers"; "count" = $comps.Count; "version" = 6 } } | ConvertTo-Json -Compress
-$metaGroups = @{ "meta" = @{ "type" = "groups"; "count" = $grps.Count; "version" = 6 } } | ConvertTo-Json -Compress
-$metaSessions = @{ "meta" = @{ "type" = "sessions"; "count" = $sessions.Count; "version" = 6 } } | ConvertTo-Json -Compress
+Write-Host "`n  [*] AD graph reconnaissance complete." -ForegroundColor Cyan
+Write-Host "  [i] This summary is not a BloodHound CE import archive." -ForegroundColor DarkGray
+'''
+        markers = {
+            "__DO_USERS__": "$true" if "user" in selected else "$false",
+            "__DO_COMPUTERS__": "$true" if "computer" in selected else "$false",
+            "__DO_GROUPS__": "$true" if "group" in selected else "$false",
+            "__DO_SESSIONS__": "$true" if "session" in selected else "$false",
+        }
+        for marker, value in markers.items():
+            ps = ps.replace(marker, value)
 
-Write-Host "  Users Meta     : $metaUsers" -ForegroundColor Gray
-Write-Host "  Computers Meta : $metaComps" -ForegroundColor Gray
-Write-Host "  Groups Meta    : $metaGroups" -ForegroundColor Gray
-Write-Host "  Sessions Meta  : $metaSessions" -ForegroundColor Gray
-
-Write-Host "`n  [*] In-Memory BloodHound AD Graph & Session collection complete." -ForegroundColor Cyan
-"""
         encoded = b64str(ps.encode("utf-16le"))
-        cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        shell.run_with_interrupt(cmd, shell.write_line)
-        return {"status": "completed"}
+        command = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
+        if shell.run_with_interrupt(command, shell.write_line):
+            return {"status": "interrupted"}
+        return {"status": "completed", "methods": sorted(selected)}

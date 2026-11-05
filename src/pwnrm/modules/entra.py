@@ -1,7 +1,4 @@
-"""
-modules.entra — Hybrid Entra ID & Cloud Pivot
-Extracts Entra ID PRT artifacts, inspects Azure AD join state, and enumerates cloud pivot vectors.
-"""
+"""Hybrid Entra ID join-state and locally accessible cache inventory."""
 
 from typing import List, Any
 from . import BaseModule
@@ -11,19 +8,26 @@ from ..shell.commands import b64str
 
 class EntraModule(BaseModule):
     name = "entra"
-    description = "Hybrid Entra ID / Azure AD Cloud Pivot (PRT & Join State Recon)"
+    description = "Hybrid Entra ID join-state and accessible cloud-cache inventory"
     author = "uziii2208"
     options = {
         "-s": {"desc": "Run full dsregcmd join status and WAM token probe"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
+        unknown = [arg for arg in args if arg != "-s"]
+        if unknown:
+            shell.write_warning(f"  [-] Unknown Entra option(s): {', '.join(unknown)}")
+            return {"status": "error", "error": "invalid options"}
+        full_scan = "-s" in args
+        full_scan_ps = "$true" if full_scan else "$false"
         shell.write_info(c(M + BLD, "  [*] PwnRM Entra Suite — running Azure AD / Hybrid Join reconnaissance..."))
 
         ps = r"""
 $ErrorActionPreference = 'SilentlyContinue'
+$fullScan = __FULL_SCAN__
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM Hybrid Entra ID / Azure AD Cloud Pivot Recon" -ForegroundColor Cyan
+Write-Host "   PwnRM Hybrid Entra ID / Azure AD Artifact Recon" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 # 1. Device Join Status (AzureADJoined / DomainJoined)
@@ -37,30 +41,38 @@ if ($dsreg) {
     Write-Host "  [-] dsregcmd not available or returned no data." -ForegroundColor Gray
 }
 
-# 2. Token Broker / WAM Cache Presence
-Write-Host "`n[2. Web Account Manager (WAM) & Cloud Token Stores]" -ForegroundColor Yellow
-$wamPath = "$env:LOCALAPPDATA\\Packages\\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy"
-if (Test-Path $wamPath) {
-    Write-Host "  [+] WAM Broker Plugin folder found: $wamPath" -ForegroundColor Green
-    Write-Host "      (Potential PRT / Primary Refresh Token artifact location)" -ForegroundColor Gray
-} else {
-    Write-Host "  [-] No WAM Broker Plugin folder for current profile." -ForegroundColor Gray
-}
-
-# Check for Azure CLI / PowerShell token caches
-$azPath = "$env:USERPROFILE\\.azure\\accessTokens.json"
-if (Test-Path $azPath) {
-    Write-Host "  [!] FOUND Azure CLI Token Cache: $azPath" -ForegroundColor Red
-}
-
-$azCtx = "$env:USERPROFILE\\.Azure\\AzureRmContext.json"
-if (Test-Path $azCtx) {
-    Write-Host "  [!] FOUND Azure PowerShell Context: $azCtx" -ForegroundColor Red
-}
+if ($fullScan) {{
+    # 2. Token Broker / WAM cache presence across locally accessible profiles.
+    Write-Host "`n[2. Web Account Manager (WAM) & Cloud Token Stores]" -ForegroundColor Yellow
+    $profiles = @(Get-ChildItem -LiteralPath "$env:SystemDrive\\Users" -Directory -Force | Select-Object -ExpandProperty FullName)
+    if ($env:USERPROFILE -and $env:USERPROFILE -notin $profiles) {{ $profiles += $env:USERPROFILE }}
+    $artifactCount = 0
+    foreach ($profile in $profiles) {{
+        $paths = @(
+            "$profile\\AppData\\Local\\Packages\\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy",
+            "$profile\\.azure\\accessTokens.json",
+            "$profile\\.azure\\msal_token_cache.bin",
+            "$profile\\.Azure\\AzureRmContext.json"
+        )
+        foreach ($path in $paths) {{
+            if (Test-Path -LiteralPath $path) {{
+                $artifactCount++
+                Write-Host "  [!] Cloud authentication artifact found: $path" -ForegroundColor Red
+            }}
+        }}
+    }}
+    if ($artifactCount -eq 0) {{
+        Write-Host "  [-] No accessible WAM, Azure CLI, or Azure PowerShell cache was found." -ForegroundColor Gray
+    }}
+}} else {{
+    Write-Host "`n  [*] Join-state scan complete. Use -s for the full WAM/cloud-cache probe." -ForegroundColor Gray
+}}
 
 Write-Host "`n  [*] Entra reconnaissance complete." -ForegroundColor Cyan
 """
+        ps = ps.replace("__FULL_SCAN__", full_scan_ps).replace("{{", "{").replace("}}", "}")
         encoded = b64str(ps.encode("utf-16le"))
         cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        shell.run_with_interrupt(cmd, shell.write_line)
-        return {"status": "completed"}
+        if shell.run_with_interrupt(cmd, shell.write_line):
+            return {"status": "interrupted"}
+        return {"status": "completed", "full_scan": full_scan}

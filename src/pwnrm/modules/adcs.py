@@ -1,173 +1,202 @@
-"""
-modules.adcs — Full ADCS Engine (ESC1–ESC17+ including WSUS Policy Abuse & CA Health)
-Performs deep Active Directory Certificate Services audit, template vulnerability triage,
-CA health inspection (CDP/AIA/expiry), and certificate enrollment helpers.
-"""
+"""Active Directory Certificate Services configuration triage."""
 
 from typing import List, Any
+
 from . import BaseModule
-from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
+from ..shell.ui import c, M, BLD
 from ..shell.commands import b64str
 
 
 class ADCSModule(BaseModule):
     name = "adcs"
-    description = "Full ADCS Engine (ESC1-ESC17+ vulnerability audit, CA health & cert tools)"
+    description = "ADCS CA health, template prerequisite/ACL and WSUS policy triage"
     author = "uziii2208"
     options = {
-        "-q": {"desc": "Quick scan mode (skips deep template ACL check)"},
-        "--template": {"desc": "Specify target template for inspection/enrollment"},
-        "--ca": {"desc": "Specify target Enterprise CA"},
-        "--alt": {"desc": "Subject Alternative Name (SAN) for ESC1/ESC6 testing"},
-        "--wsus": {"desc": "Inspect ESC17 WSUS policy and Code Signing certificate templates"},
+        "-q": {"desc": "Quick scan: skip template ACLs, CA certificate parsing and WSUS policy"},
+        "--template": {"desc": "Inspect one certificate template by CN"},
+        "--ca": {"desc": "Inspect one Enterprise CA by CN"},
+        "--alt": {"desc": "Annotate matching findings with a proposed SAN (no request is sent)"},
+        "--wsus": {"desc": "Include WSUS client policy and code-signing template correlation"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
-        quick = "-q" in args or "--quick" in args
-        target_template = ""
-        for i, a in enumerate(args):
-            if a == "--template" and i + 1 < len(args):
-                target_template = args[i + 1]
+        quick = False
+        force_wsus = False
+        values = {"--template": "", "--ca": "", "--alt": ""}
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            if arg in {"-q", "--quick"}:
+                quick = True
+                idx += 1
+                continue
+            if arg == "--wsus":
+                force_wsus = True
+                idx += 1
+                continue
+            if arg in values:
+                if idx + 1 >= len(args) or not args[idx + 1].strip():
+                    shell.write_warning(f"  [-] {arg} requires a value.")
+                    return {"status": "error", "error": f"missing value for {arg}"}
+                values[arg] = args[idx + 1]
+                idx += 2
+                continue
+            shell.write_warning(f"  [-] Unknown ADCS option: {arg}")
+            return {"status": "error", "error": "invalid option"}
 
-        shell.write_info(c(M + BLD, "  [*] PwnRM ADCS Engine — initializing ESC1-ESC17+ audit & CA health check..."))
+        shell.write_info(c(M + BLD, "  [*] PwnRM ADCS Engine — auditing CA, template and enrollment controls..."))
+        encoded_values = {
+            key: b64str(value.encode("utf-8")) if value else ""
+            for key, value in values.items()
+        }
 
-        ps = r"""
+        ps = r'''
 $ErrorActionPreference = 'SilentlyContinue'
+$quick = __QUICK__
+$doWsus = __DO_WSUS__
+$targetTemplate = if ('__TEMPLATE__') { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TEMPLATE__')) } else { '' }
+$targetCA = if ('__CA__') { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__CA__')) } else { '' }
+$proposedSAN = if ('__ALT__') { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__ALT__')) } else { '' }
+
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM ADCS Engine (ESC1 - ESC17+ Audit & CA Health)" -ForegroundColor Cyan
+Write-Host "   PwnRM ADCS Configuration & Enrollment Triage" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
-$domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-$rootDSE = [ADSI]"LDAP://RootDSE"
-$configNC = $rootDSE.configurationNamingContext
-$pkiBase = [ADSI]"LDAP://CN=Public Key Services,CN=Services,$configNC"
+$rootDSE = [ADSI]'LDAP://RootDSE'
+$configNC = [string]$rootDSE.configurationNamingContext
+$defaultNC = [string]$rootDSE.defaultNamingContext
+if (-not $configNC) { Write-Error 'Unable to read the Configuration naming context.'; return }
 
-if (-not $pkiBase.Path) {
-    Write-Host "  [-] No Public Key Services container found in Domain Configuration NC." -ForegroundColor Yellow
-    return
-}
-
-Write-Host "  [+] PKI Container : $($pkiBase.distinguishedName)" -ForegroundColor Green
-
-# 1. Enumerate Enterprise CAs & Health Check
-Write-Host "`n[1. Enterprise Certification Authorities & Health]" -ForegroundColor Yellow
-$caSearcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://CN=Enrollment Services,CN=Public Key Services,CN=Services,$configNC")
-$caSearcher.Filter = "(objectClass=pKIEnrollmentService)"
-$cas = $caSearcher.FindAll()
-
-foreach ($ca in $cas) {
-    $caObj = $ca.GetDirectoryEntry()
-    $caname = $caObj.cn.Value
-    $dns = $caObj.dNSHostName.Value
-    $templates = $caObj.certificateTemplates
-    $certBytes = $caObj.cACertificate.Value
-    Write-Host "  - CA Name       : $caname" -ForegroundColor White
-    Write-Host "    DNS Hostname  : $dns" -ForegroundColor Gray
-    Write-Host "    Published Tpls: $($templates.Count) templates" -ForegroundColor Gray
-
-    if ($certBytes) {
+$publishedTemplates = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$caMatches = 0
+Write-Host '[Enterprise Certification Authorities]' -ForegroundColor Yellow
+$caSearcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]("LDAP://CN=Enrollment Services,CN=Public Key Services,CN=Services,$configNC"))
+$caSearcher.Filter = '(objectClass=pKIEnrollmentService)'
+foreach ($ca in $caSearcher.FindAll()) {
+    $entry = $ca.GetDirectoryEntry()
+    $name = [string]$entry.cn.Value
+    if ($targetCA -and $name -ine $targetCA) { continue }
+    $caMatches++
+    $dns = [string]$entry.dNSHostName.Value
+    $templates = @($entry.certificateTemplates)
+    foreach ($templateName in $templates) { $null = $publishedTemplates.Add([string]$templateName) }
+    Write-Host "  - $name on $dns ($($templates.Count) published templates)" -ForegroundColor White
+    if (-not $quick -and $entry.cACertificate.Value) {
         try {
-            $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$certBytes)
-            $notAfter = $x509.NotAfter
-            if ($notAfter -lt (Get-Date)) {
-                Write-Host "    [!] EXPIRED CA CERTIFICATE : Expired on $notAfter" -ForegroundColor Red
-            } else {
-                Write-Host "    [*] CA Cert Valid Until    : $notAfter" -ForegroundColor Green
+            $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(,$entry.cACertificate.Value)
+            $color = if ($certificate.NotAfter -lt (Get-Date)) { 'Red' } else { 'Green' }
+            Write-Host "    Certificate expires: $($certificate.NotAfter)" -ForegroundColor $color
+        } catch { Write-Host "    [-] CA certificate could not be decoded." -ForegroundColor Yellow }
+    }
+}
+if ($caMatches -eq 0) { Write-Host "  [-] No Enterprise CA matched the requested filter." -ForegroundColor Yellow }
+
+$domainSid = $null
+try {
+    $domainEntry = [ADSI]("LDAP://$defaultNC")
+    $domainSid = [System.Security.Principal.SecurityIdentifier]::new([byte[]]$domainEntry.objectSid.Value, 0).Value
+} catch {}
+$lowPrivilegeSids = @('S-1-1-0', 'S-1-5-11')
+if ($domainSid) { $lowPrivilegeSids += "$domainSid-513", "$domainSid-515" }
+$enrollGuid = [Guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+$autoEnrollGuid = [Guid]'a05b8cc2-17bc-4802-a710-e7c15ab866a2'
+
+Write-Host "`n[Certificate Template Prerequisites & ACLs]" -ForegroundColor Yellow
+$templateSearcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]("LDAP://CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC"))
+$templateSearcher.Filter = '(objectClass=pKICertificateTemplate)'
+$templateMatches = 0
+$indicatorCount = 0
+foreach ($result in $templateSearcher.FindAll()) {
+    $entry = $result.GetDirectoryEntry()
+    $name = [string]$entry.cn.Value
+    if ($targetTemplate -and $name -ine $targetTemplate) { continue }
+    $templateMatches++
+    $displayName = [string]$entry.displayName.Value
+    $nameFlags = [int]$entry.'msPKI-Certificate-Name-Flag'.Value
+    $ekus = @($entry.'pKIExtendedKeyUsage' | ForEach-Object { [string]$_ })
+    $suppliesSubject = ($nameFlags -band 1) -ne 0
+    $clientAuth = @($ekus | Where-Object { $_ -in @('1.3.6.1.5.5.7.3.2', '1.3.6.1.5.2.3.4', '1.3.6.1.4.1.311.20.2.2') }).Count -gt 0
+    $anyPurpose = $ekus.Count -eq 0 -or $ekus -contains '2.5.29.37.0'
+    $requestAgent = $ekus -contains '1.3.6.1.4.1.311.20.2.1'
+    $codeSigning = @($ekus | Where-Object { $_ -in @('1.3.6.1.5.5.7.3.3', '1.3.6.1.4.1.311.10.3.6', '1.3.6.1.4.1.311.76.7.1') }).Count -gt 0
+    $published = $publishedTemplates.Contains($name)
+    $lowPrivControl = $false
+    $lowPrivTrustees = @()
+
+    if (-not $quick) {
+        try {
+            $rules = $entry.ObjectSecurity.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+            foreach ($rule in $rules) {
+                $sid = $rule.IdentityReference.Value
+                if ($rule.AccessControlType -ne 'Allow' -or $sid -notin $lowPrivilegeSids) { continue }
+                $rights = [string]$rule.ActiveDirectoryRights
+                $objectType = $rule.ObjectType
+                $broadControl = $rights -match 'GenericAll|GenericWrite|WriteDacl|WriteOwner'
+                $enrollRight = $rights -match 'ExtendedRight' -and ($objectType -eq [Guid]::Empty -or $objectType -eq $enrollGuid -or $objectType -eq $autoEnrollGuid)
+                if ($broadControl -or $enrollRight) { $lowPrivControl = $true; $lowPrivTrustees += $sid }
             }
-        } catch {}
-    }
-}
-
-# 2. Template Vulnerability Triage (ESC1 - ESC17)
-Write-Host "`n[2. Certificate Template Vulnerability Triage (ESC1-ESC17)]" -ForegroundColor Yellow
-$tplSearcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://CN=Certificate Templates,CN=Public Key Services,CN=Services,$configNC")
-$tplSearcher.Filter = "(objectClass=pKICertificateTemplate)"
-$tpls = $tplSearcher.FindAll()
-
-$found_vuln = 0
-foreach ($t in $tpls) {
-    $entry = $t.GetDirectoryEntry()
-    $tname = $entry.cn.Value
-    $dispName = $entry.displayName.Value
-    $flags = [int]$entry."msPKI-Enrollment-Flag".Value
-    $nameFlags = [int]$entry."msPKI-Certificate-Name-Flag".Value
-    $ekus = $entry."pKIExtendedKeyUsage"
-
-    # CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT = 0x00000001 (1)
-    $enrolleeSuppliesSan = ($nameFlags -band 1) -ne 0
-
-    # Client Authentication OIDs
-    $hasClientAuth = $false
-    $hasCodeSigning = $false
-    foreach ($eku in $ekus) {
-        if ($eku -in @("1.3.6.1.5.5.7.3.2", "1.3.6.1.5.2.3.4", "2.5.29.37.0", "1.3.6.1.4.1.311.20.2.2")) {
-            $hasClientAuth = $true
-        }
-        if ($eku -in @("1.3.6.1.5.5.7.3.3", "1.3.6.1.4.1.311.10.3.6", "1.3.6.1.4.1.311.76.7.1")) {
-            $hasCodeSigning = $true
-        }
+        } catch { Write-Host "  [-] Could not read ACL for template '$name'." -ForegroundColor Yellow }
     }
 
-    # Check ESC1
-    if ($enrolleeSuppliesSan -and $hasClientAuth) {
-        Write-Host "  [!] [ESC1 VULNERABLE] Template '$tname' ($dispName)" -ForegroundColor Red
-        Write-Host "      - Enrollee supplies SAN flag is set (CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT)" -ForegroundColor DarkRed
-        Write-Host "      - Contains Client Authentication / PKINIT EKU" -ForegroundColor DarkRed
-        $found_vuln++
-    }
+    $signals = @()
+    if ($suppliesSubject -and $clientAuth) { $signals += 'ESC1 prerequisites (subject/SAN supply + client authentication)' }
+    if ($anyPurpose) { $signals += 'ESC2 prerequisites (Any Purpose or no EKU restriction)' }
+    if ($requestAgent) { $signals += 'ESC3 prerequisite (Certificate Request Agent EKU)' }
+    if ($codeSigning) { $signals += 'Code-signing / Windows Update EKU' }
+    if ($signals.Count -eq 0 -and -not $targetTemplate) { continue }
 
-    # Check ESC2 (Any Purpose EKU or No EKU)
-    if ($enrolleeSuppliesSan -and ($ekus.Count -eq 0 -or $ekus -contains "2.5.29.37.0")) {
-        Write-Host "  [!] [ESC2 VULNERABLE] Template '$tname' ($dispName)" -ForegroundColor Magenta
-        Write-Host "      - Enrollee supplies SAN with Any Purpose EKU / SubCA usage" -ForegroundColor DarkMagenta
-        $found_vuln++
-    }
-
-    # Check ESC3 (Certificate Request Agent)
-    if ($ekus -contains "1.3.6.1.4.1.311.20.2.1") {
-        Write-Host "  [!] [ESC3 ENROLLMENT AGENT] Template '$tname' ($dispName)" -ForegroundColor Yellow
-        Write-Host "      - Contains Certificate Request Agent EKU" -ForegroundColor Gray
-    }
-
-    # Check ESC17 (Code Signing / WSUS / Windows Update Template Abuse)
-    if ($hasCodeSigning) {
-        $extraSan = if ($enrolleeSuppliesSan) { " + Enrollee Supplies SAN" } else { "" }
-        Write-Host "  [!] [ESC17 CODE SIGNING / WSUS] Template '$tname' ($dispName)$extraSan" -ForegroundColor Yellow
-        Write-Host "      - Code Signing / Windows Update EKU present (1.3.6.1.5.5.7.3.3)" -ForegroundColor DarkYellow
-        $found_vuln++
-    }
-}
-
-# 3. ESC17 WSUS Policy & Configuration Scout
-Write-Host "`n[3. ESC17 WSUS Client Policy & Endpoint Scout]" -ForegroundColor Yellow
-$wuPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
-if (Test-Path $wuPath) {
-    $wuServer = (Get-ItemProperty $wuPath -Name "WUServer" -ErrorAction SilentlyContinue).WUServer
-    $acceptTrusted = (Get-ItemProperty "$wuPath\AU" -Name "AcceptTrustedPublisherCerts" -ErrorAction SilentlyContinue).AcceptTrustedPublisherCerts
-    if ($wuServer) {
-        Write-Host "  [+] Configured WSUS Server: $wuServer" -ForegroundColor White
-        if ($wuServer -match "^http://") {
-            Write-Host "      [!] WSUS using HTTP (Cleartext) — High risk of MITM update injection!" -ForegroundColor Red
-        }
-    }
-    if ($acceptTrusted -eq 1) {
-        Write-Host "  [!] [ESC17 DANGER] AcceptTrustedPublisherCerts is ENABLED (1)" -ForegroundColor Red
-        Write-Host "      - Certificates from Enterprise CA Code Signing templates are trusted for updates!" -ForegroundColor DarkRed
+    $indicatorCount += $signals.Count
+    Write-Host "  [*] $name ($displayName)" -ForegroundColor White
+    Write-Host "      Published by selected CA(s): $published" -ForegroundColor Gray
+    foreach ($signal in $signals) { Write-Host "      - $signal" -ForegroundColor Yellow }
+    if ($quick) {
+        Write-Host '      - ACL not evaluated in quick mode' -ForegroundColor DarkGray
+    } elseif ($lowPrivControl) {
+        Write-Host "      [!] Low-privilege enrollment/control ACE: $($lowPrivTrustees -join ', ')" -ForegroundColor Red
     } else {
-        $acceptTrustedDisplay = if ($null -eq $acceptTrusted) { 0 } else { $acceptTrusted }
-        Write-Host "  [*] AcceptTrustedPublisherCerts : $acceptTrustedDisplay" -ForegroundColor Gray
+        Write-Host '      [+] No direct low-privilege enrollment/control ACE matched the built-in principals.' -ForegroundColor Green
     }
-} else {
-    Write-Host "  [-] No local WSUS policy found under HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ForegroundColor Gray
+    if ($proposedSAN -and $suppliesSubject) { Write-Host "      Proposed SAN annotation: $proposedSAN (no request sent)" -ForegroundColor Magenta }
+}
+if ($templateMatches -eq 0) {
+    Write-Host '  [-] No certificate template matched the requested filter.' -ForegroundColor Yellow
+} elseif ($indicatorCount -eq 0) {
+    Write-Host '  [+] No implemented ESC1/2/3 or code-signing prerequisite was found.' -ForegroundColor Green
 }
 
-if ($found_vuln -eq 0) {
-    Write-Host "  [+] No standard vulnerable templates discovered." -ForegroundColor Green
+if ($doWsus) {
+    Write-Host "`n[Local WSUS Client Policy]" -ForegroundColor Yellow
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (Test-Path -LiteralPath $path) {
+        $server = (Get-ItemProperty -LiteralPath $path -Name WUServer -ErrorAction SilentlyContinue).WUServer
+        $acceptTrusted = (Get-ItemProperty -LiteralPath "$path\AU" -Name AcceptTrustedPublisherCerts -ErrorAction SilentlyContinue).AcceptTrustedPublisherCerts
+        Write-Host "  WUServer: $(if ($server) { $server } else { '<unset>' })" -ForegroundColor White
+        Write-Host "  AcceptTrustedPublisherCerts: $(if ($null -eq $acceptTrusted) { '<unset>' } else { $acceptTrusted })" -ForegroundColor White
+        if ($server -match '^http://' -and $acceptTrusted -eq 1) { Write-Host '  [!] Cleartext WSUS plus trusted publisher certificates requires immediate review.' -ForegroundColor Red }
+    } else { Write-Host '  [-] No local WSUS policy was found.' -ForegroundColor Gray }
 }
 
-Write-Host "`n  [*] ADCS ESC1-ESC17+ Triage complete." -ForegroundColor Cyan
-"""
+Write-Host "`n  [*] ADCS configuration triage complete." -ForegroundColor Cyan
+Write-Host '  [i] Prerequisite matches are not exploitable findings without publication, ACL and CA-policy validation.' -ForegroundColor DarkGray
+'''
+        replacements = {
+            "__QUICK__": "$true" if quick else "$false",
+            "__DO_WSUS__": "$true" if (force_wsus or not quick) else "$false",
+            "__TEMPLATE__": encoded_values["--template"],
+            "__CA__": encoded_values["--ca"],
+            "__ALT__": encoded_values["--alt"],
+        }
+        for marker, value in replacements.items():
+            ps = ps.replace(marker, value)
+
         encoded = b64str(ps.encode("utf-16le"))
-        cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        shell.run_with_interrupt(cmd, shell.write_line)
-        return {"status": "completed"}
+        command = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
+        if shell.run_with_interrupt(command, shell.write_line):
+            return {"status": "interrupted"}
+        return {
+            "status": "completed",
+            "quick": quick,
+            "template": values["--template"],
+            "ca": values["--ca"],
+            "wsus": force_wsus or not quick,
+        }

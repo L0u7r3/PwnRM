@@ -66,8 +66,56 @@ class PlaybookModule(BaseModule):
         # Direct substring in last_output
         return when.lower() in last_output.lower()
 
+    @staticmethod
+    def _validate_steps(raw_steps: Any) -> List[Union[str, Dict[str, Any]]]:
+        """Validate the deliberately small playbook schema before execution."""
+        if isinstance(raw_steps, dict):
+            raw_steps = raw_steps.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            raise ValueError("playbook must contain a non-empty steps array")
+
+        allowed = {"cmd", "when", "capture_as", "on_fail", "cleanup_on_fail"}
+        validated = []
+        for index, step in enumerate(raw_steps, 1):
+            if isinstance(step, str):
+                if not step.strip():
+                    raise ValueError(f"step {index} has an empty command")
+                validated.append(step)
+                continue
+            if not isinstance(step, dict):
+                raise ValueError(f"step {index} must be a command string or object")
+            unknown = set(step) - allowed
+            if unknown:
+                raise ValueError(f"step {index} has unknown fields: {', '.join(sorted(unknown))}")
+            if not isinstance(step.get("cmd"), str) or not step["cmd"].strip():
+                raise ValueError(f"step {index} has an invalid command")
+            for field in ("when", "capture_as"):
+                if field in step and not isinstance(step[field], str):
+                    raise ValueError(f"step {index} field '{field}' must be a string")
+            cleanup = step.get("cleanup_on_fail")
+            if cleanup is not None:
+                if isinstance(cleanup, str):
+                    cleanup = [cleanup]
+                if (
+                    not isinstance(cleanup, list)
+                    or not cleanup
+                    or any(not isinstance(cmd, str) or not cmd.strip() for cmd in cleanup)
+                ):
+                    raise ValueError(
+                        f"step {index} field 'cleanup_on_fail' must be a command or non-empty command array"
+                    )
+                step = dict(step)
+                step["cleanup_on_fail"] = cleanup
+            capture_as = step.get("capture_as")
+            if capture_as and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", capture_as):
+                raise ValueError(f"step {index} has an invalid capture_as name")
+            if step.get("on_fail", "abort") not in {"abort", "continue"}:
+                raise ValueError(f"step {index} on_fail must be 'abort' or 'continue'")
+            validated.append(step)
+        return validated
+
     def run(self, shell, args: List[str]) -> Any:
-        if "--list" in args or not args:
+        if not args or args == ["--list"]:
             shell.write_info(c(C + BLD, "  [*] Built-in Playbooks:"))
             for name, steps in self.BUILTIN_PLAYBOOKS.items():
                 shell.write_info(f"    - {c(Y, name)} ({len(steps)} steps)")
@@ -79,25 +127,32 @@ class PlaybookModule(BaseModule):
 
         pb_name = ""
         pb_file = ""
-        for i, a in enumerate(args):
-            if a == "--run" and i + 1 < len(args):
-                pb_name = args[i + 1]
-            elif a == "--file" and i + 1 < len(args):
-                pb_file = args[i + 1]
-            elif a in self.BUILTIN_PLAYBOOKS:
-                pb_name = a
+        if len(args) == 2 and args[0] == "--run":
+            pb_name = args[1]
+        elif len(args) == 2 and args[0] == "--file":
+            pb_file = args[1]
+        elif len(args) == 1 and args[0] in self.BUILTIN_PLAYBOOKS:
+            pb_name = args[0]
+        else:
+            shell.write_warning("Unknown playbook or syntax. Use !playbook --list")
+            return {"status": "error", "error": "invalid syntax"}
 
         steps = []
         if pb_file:
             try:
-                with open(pb_file, "r", encoding="utf-8") as f:
-                    steps = json.load(f)
-                pb_name = Path(pb_file).stem
+                playbook_path = Path(pb_file)
+                if not playbook_path.is_file() or playbook_path.is_symlink():
+                    raise ValueError("playbook path must be a regular non-symlink file")
+                if playbook_path.stat().st_size > 1024 * 1024:
+                    raise ValueError("playbook exceeds the 1 MiB size limit")
+                with open(playbook_path, "r", encoding="utf-8") as f:
+                    steps = self._validate_steps(json.load(f))
+                pb_name = playbook_path.stem
             except Exception as e:
                 shell.write_error(f"Failed to load playbook file {pb_file}: {e}")
                 return {"status": "error"}
         elif pb_name in self.BUILTIN_PLAYBOOKS:
-            steps = self.BUILTIN_PLAYBOOKS[pb_name]
+            steps = self._validate_steps(self.BUILTIN_PLAYBOOKS[pb_name])
 
         if steps:
             shell.write_info(c(M + BLD, f"  [*] Executing Playbook: '{pb_name}' ({len(steps)} steps)"))
@@ -117,7 +172,7 @@ class PlaybookModule(BaseModule):
                     continue
 
                 if cleanup_cmd:
-                    cleanup_stack.append(cleanup_cmd)
+                    cleanup_stack.extend(cleanup_cmd)
 
                 shell.write_info(c(Y + BLD, f"\n  ==> [Step {idx}/{len(steps)}] Executing: {cmd_str}"))
 
@@ -130,14 +185,21 @@ class PlaybookModule(BaseModule):
                         captured_lines.append(out["stdout"])
                     orig_write_line(out)
 
+                failure = None
+                result = None
                 try:
                     shell.write_line = capturing_writer
-                    shell.repl(inputs=[cmd_str])
+                    result = shell.repl(inputs=[cmd_str])
                 except Exception as e:
-                    shell.write_error(f"  [!] Step {idx} failed: {e}")
-                    if on_fail == "continue":
-                        shell.write_warning("  [*] Continuing playbook execution (on_fail: continue)...")
-                        continue
+                    failure = str(e)
+                finally:
+                    shell.write_line = orig_write_line
+
+                if isinstance(result, dict) and result.get("status") in {"error", "failed", "interrupted"}:
+                    failure = result.get("error") or result.get("status")
+
+                if failure:
+                    shell.write_error(f"  [!] Step {idx} failed: {failure}")
                     if cleanup_stack:
                         shell.write_warning(f"  [*] Executing {len(cleanup_stack)} on_fail cleanup tasks...")
                         for clean in reversed(cleanup_stack):
@@ -145,9 +207,11 @@ class PlaybookModule(BaseModule):
                                 shell.repl(inputs=[clean])
                             except Exception as c_err:
                                 shell.write_error(f"Cleanup error: {c_err}")
+                        cleanup_stack.clear()
+                    if on_fail == "continue":
+                        shell.write_warning("  [*] Continuing playbook execution (on_fail: continue)...")
+                        continue
                     return {"status": "failed", "step": idx}
-                finally:
-                    shell.write_line = orig_write_line
 
                 last_output = "\n".join(captured_lines)
                 if capture_var:

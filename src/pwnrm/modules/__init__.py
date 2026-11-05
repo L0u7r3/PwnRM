@@ -7,6 +7,7 @@ import os
 import stat
 import importlib.util
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Type, List, Optional, Any
 
@@ -34,9 +35,16 @@ class ModuleManager:
         self._modules: Dict[str, BaseModule] = {}
         self._load_builtins()
 
-    def register(self, module_cls: Type[BaseModule]):
+    def register(self, module_cls: Type[BaseModule]) -> bool:
         instance = module_cls()
-        self._modules[instance.name.lower()] = instance
+        name = str(getattr(instance, "name", "")).strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
+            raise ValueError(f"invalid module name: {name!r}")
+        if name in self._modules:
+            logging.warning("Refusing to replace registered module: %s", name)
+            return False
+        self._modules[name] = instance
+        return True
 
     def get_module(self, name: str) -> Optional[BaseModule]:
         return self._modules.get(name.lower())
@@ -59,10 +67,13 @@ class ModuleManager:
             if not path.is_file() or path.is_symlink():
                 return False
             st = path.stat()
-            # Enforce non-world-writable permission on POSIX systems
-            if os.name == "posix" and hasattr(stat, "S_IWOTH") and (st.st_mode & stat.S_IWOTH):
-                logging.warning("Refusing to load world-writable plugin: %s", path)
-                return False
+            if os.name == "posix":
+                if st.st_uid != os.geteuid():
+                    logging.warning("Refusing to load plugin owned by another user: %s", path)
+                    return False
+                if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    logging.warning("Refusing to load group/world-writable plugin: %s", path)
+                    return False
             return True
         except OSError:
             return False
@@ -80,8 +91,7 @@ class ModuleManager:
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 if isinstance(obj, type) and issubclass(obj, BaseModule) and obj is not BaseModule:
-                    self.register(obj)
-                    return True
+                    return self.register(obj)
             return False
         except Exception as e:
             logging.error("Failed to load external plugin %s: %s", path, e)
@@ -118,7 +128,5 @@ class ModuleManager:
             TokenModule,
         ]
         for b in builtins:
-            try:
-                self.register(b)
-            except Exception as e:
-                logging.debug("Error loading module %s: %s", getattr(b, "name", "unknown"), e)
+            if not self.register(b):
+                raise RuntimeError(f"duplicate built-in module name: {getattr(b, 'name', 'unknown')}")

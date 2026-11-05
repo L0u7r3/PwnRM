@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Propagate remote PowerShell error records through the REPL, CLI single-command
+  mode, session fan-out, and playbooks instead of reporting false success.
+- Validate every implemented module selector and make ADCS, Kerberos, Entra,
+  credentials, LAPS, lateral scan, token, BloodHound summary, evasion, ACL, and
+  VSS options affect the generated operation.
+- Replace nonfunctional RPC coercion claims with real WebDAV/SMB UNC probes;
+  remove false token elevation, Diamond forging, BloodHound archive, in-band
+  pivot, and complete ESC1–ESC17 claims.
+- Make local SOCKS5 and TCP forwarding truthful, validate their lifecycle, and
+  add end-to-end relay tests against a real echo server.
+- Make VSS failure records terminating, check shadow cleanup, and document the
+  remote temporary staging behavior.
+- Repair `!psrun`, `!netrun`, XOR staging, reverse-shell address validation,
+  `Ctrl+C`, zero-byte upload, directory download, SHA-256 transfer verification,
+  and bounded transfer buffers.
+- Apply OPSEC profile command rewriting and fragment sizing instead of exposing
+  unused settings; preserve failures across batch/replay execution.
+- Validate NT/LM:NT hash syntax, default client-certificate auth to HTTPS, and
+  enable TLS certificate verification unless explicitly disabled.
+- Reject symlinked loot/session destinations, use atomic mode-0600 metadata
+  writes, prevent category traversal, and protect concurrent manifest updates.
+- Reject plugin replacement of built-ins and plugins owned by another UID or
+  writable by group/other.
+- Mark the WebSocket prototype explicitly unsupported rather than returning an
+  HTTP Upgrade response as if it were a functional transport.
+- Replace the previous feature documentation with behavior-accurate references
+  and explicit capability boundaries.
 - Generate valid PowerShell VSS mode selection, accept the documented
   interactive `!vss sam` / `!vss ntds` forms, and honor an explicit SAM mode
   on domain controllers.
@@ -38,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matrix.
 
 ## [2.1.0] - 2026-08-30
+
+> Historical note: several feature claims in this release entry described
+> intended behavior that was not implemented. The Unreleased fixes above are
+> the authoritative description of the maintained fork.
 
 ### Next-Gen Post-Exploitation Suite & Autonomous CI/CD Security Audit Pipeline
 
@@ -132,6 +163,10 @@ This release delivers comprehensive security hardening, vulnerability mitigation
 ---
 
 ## [2.0.0] - 2026-08-29
+
+> Historical note: several feature claims in this release entry described
+> intended behavior that was not implemented. The Unreleased fixes above are
+> the authoritative description of the maintained fork.
 
 ### Major Transformation: Next-Generation WinRM Red Team Operator Platform (2026–2027 TTPs)
 

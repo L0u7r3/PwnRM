@@ -41,10 +41,12 @@ class TestCoerceModule(unittest.TestCase):
         encoded = re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)
         script = base64.b64decode(encoded).decode("utf-16le")
         self.assertIn("$port = 8080", script)
+        self.assertIn("PWNRM:AUTH-PROBE:COMPLETE", script)
 
     def test_rejects_invalid_method_and_port(self):
         for args in (
             ["--listener", "host", "--method", "invalid"],
+            ["--listener", "host", "--method", "spooler"],
             ["--listener", "host", "--port", "0"],
             ["--listener", "host", "--port", "not-a-port"],
         ):
@@ -54,14 +56,11 @@ class TestCoerceModule(unittest.TestCase):
                 self.assertEqual(res.get("status"), "error")
                 self.mock_shell.run_with_interrupt.assert_not_called()
 
-    def test_listener_is_not_interpolated_into_powershell(self):
+    def test_listener_injection_is_rejected(self):
         marker = "host'; Write-Host INJECTED; '"
-        self.mod.run(self.mock_shell, ["--listener", marker])
-        cmd = self.mock_shell.run_with_interrupt.call_args[0][0]
-        encoded = re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)
-        script = base64.b64decode(encoded).decode("utf-16le")
-        self.assertNotIn(marker, script)
-        self.assertNotIn("Write-Host INJECTED", script)
+        result = self.mod.run(self.mock_shell, ["--listener", marker])
+        self.assertEqual(result, {"status": "error", "error": "invalid listener"})
+        self.mock_shell.run_with_interrupt.assert_not_called()
 
 
 if __name__ == "__main__":

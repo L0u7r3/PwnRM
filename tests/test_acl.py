@@ -41,7 +41,12 @@ class TestACLModule(unittest.TestCase):
         script = base64.b64decode(encoded).decode("utf-16le")
         self.assertIn("$tier0Deep = $true", script)
         self.assertIn("DirectorySearcher", script)
-        self.assertIn('{ "Red" } else { "Green" }', script)
+        self.assertIn("$currentTrustees", script)
+        self.assertIn("$sid.Translate", script)
+        self.assertIn("$ErrorActionPreference = 'Stop'", script)
+        self.assertIn("00299570-246d-11d0-a768-00aa006e0529", script)
+        self.assertIn("$isHighImpactExtendedRight", script)
+        self.assertIn('{ "Yellow" } else { "Green" }', script)
 
     def test_target_is_not_interpolated_into_powershell(self):
         marker = "x'; Write-Host INJECTED; '"
@@ -51,6 +56,14 @@ class TestACLModule(unittest.TestCase):
         script = base64.b64decode(encoded).decode("utf-16le")
         self.assertNotIn(marker, script)
         self.assertNotIn("Write-Host INJECTED", script)
+
+    def test_invalid_options_are_rejected(self):
+        for args in (["--target"], ["--nope"]):
+            with self.subTest(args=args):
+                self.mock_shell.run_with_interrupt.reset_mock()
+                res = self.mod.run(self.mock_shell, args)
+                self.assertEqual(res.get("status"), "error")
+                self.mock_shell.run_with_interrupt.assert_not_called()
 
 
 if __name__ == "__main__":

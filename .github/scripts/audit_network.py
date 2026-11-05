@@ -46,7 +46,15 @@ class NetworkAuditVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign):
         # CHECK-N4: SSL verification check
         snippet = self._get_line_snippet(node.lineno)
-        if "verify" in snippet and "False" in snippet:
+        disables_verification = (
+            isinstance(node.value, ast.Constant)
+            and node.value.value is False
+            and any(
+                isinstance(target, ast.Attribute) and target.attr == "verify"
+                for target in node.targets
+            )
+        )
+        if disables_verification:
             if "Transport" in self.current_class or "transports.py" in self.filepath:
                 finding = {
                     "severity": "INFO",
