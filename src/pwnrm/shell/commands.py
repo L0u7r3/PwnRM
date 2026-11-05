@@ -92,22 +92,6 @@ return y;
 "@
 """
 
-_path_fix    = "P" + secrets.token_hex(secrets.randbelow(6) + 3)
-_new_PathFix = f"(New-Object {_ns}.{_path_fix})"
-_importPathFix = f"""
-Add-Type @"
-namespace {_ns} {{
-public class {_path_fix} : System.Text.UTF8Encoding {{
-public override byte[] GetBytes(string s) {{
-s=s.Replace("\\\\", "/");
-return base.GetBytes(s);
-}}
-}}
-}}
-"@
-"""
-
-
 # ── dll_import: generates D/Invoke-style Add-Type payloads ───────────────────
 def dll_import(ns: str, lib: str, fun: str, sigs: List[str]):
     cls   = f"f{secrets.token_hex(secrets.randbelow(6) + 3)}"

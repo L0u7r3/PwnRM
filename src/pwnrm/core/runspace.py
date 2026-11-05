@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from typing import Optional, Dict, Any, Generator
 
 from pypsrp.wsman      import WSMan
-from pypsrp.powershell  import RunspacePool, PowerShell
+from pypsrp.powershell  import RunspacePool, PowerShell, PSInvocationState
 from spnego import KerberosCCache
 
 from .credentials import NTCredential, KrbCredential
@@ -20,6 +20,7 @@ from .transports  import (Transport, BasicTransport, SPNEGOTransport, KerberosTr
 
 class Runspace:
     def __init__(self, transport: Transport, timeout: int = 30, max_consecutive_timeouts: int = 60):
+        self._transport = transport
         self.timeout = timeout
         self.max_consecutive_timeouts = max_consecutive_timeouts
         self.consecutive_timeouts = 0
@@ -107,6 +108,7 @@ class Runspace:
             _wt._build_session = _hardened_build
 
         self._pool: Optional[RunspacePool] = None
+        self._active_ps: Optional[PowerShell] = None
         self.shell_id: Optional[str]       = None
         self.command_id: Optional[str]     = None
 
@@ -145,40 +147,71 @@ class Runspace:
         """
         try:
             ps = PowerShell(self._pool)
+            self._active_ps = ps
             ps.add_script(cmd)
             ps.add_cmdlet("Out-String").add_parameter("Stream")
-            ps.invoke()
+            # Poll with a short WSMan operation timeout. This gives the caller a
+            # scheduling point between Receive requests, where PS_CTRL_C can be
+            # sent without issuing concurrent requests on one encrypted session.
+            ps.begin_invoke(remote_stream_options=0)
             self.command_id = str(ps.id) if hasattr(ps, "id") else None
-            self.consecutive_timeouts = 0  # reset timeout counter on successful invoke
+            offsets = {
+                "output": 0,
+                "error": 0,
+                "warning": 0,
+                "verbose": 0,
+                "information": 0,
+                "progress": 0,
+            }
 
-            # stdout
-            for item in ps.output:
-                text = str(item)
-                if text:
-                    yield {"stdout": text + "\n"}
+            def collect_events():
+                events = []
+                output = list(ps.output)
+                for item in output[offsets["output"]:]:
+                    text = str(item)
+                    if text:
+                        events.append({"stdout": text + "\n"})
+                offsets["output"] = len(output)
 
-            # errors
-            for err in ps.streams.error:
-                yield {"error": str(err)}
+                stream_map = (
+                    ("error", "error"),
+                    ("warning", "warn"),
+                    ("verbose", "verbose"),
+                )
+                for stream_name, event_name in stream_map:
+                    stream = list(getattr(ps.streams, stream_name))
+                    events.extend(
+                        {event_name: str(item)}
+                        for item in stream[offsets[stream_name]:]
+                    )
+                    offsets[stream_name] = len(stream)
 
-            # warnings
-            for warn in ps.streams.warning:
-                yield {"warn": str(warn)}
+                information = list(ps.streams.information)
+                for info in information[offsets["information"]:]:
+                    msg = getattr(info, "message_data", str(info))
+                    events.append({"info": str(msg), "endl": "\n"})
+                offsets["information"] = len(information)
 
-            # verbose
-            for v in ps.streams.verbose:
-                yield {"verbose": str(v)}
+                progress = list(ps.streams.progress)
+                for prog in progress[offsets["progress"]:]:
+                    activity = getattr(prog, "activity", "")
+                    status = getattr(prog, "status_description", "")
+                    events.append({"progress": str(status or activity)})
+                offsets["progress"] = len(progress)
+                return events
 
-            # information
-            for info in ps.streams.information:
-                msg = getattr(info, "message_data", str(info))
-                yield {"info": str(msg), "endl": "\n"}
+            while True:
+                if ps.state == PSInvocationState.RUNNING:
+                    ps.poll_invoke(timeout=max(1, min(self.timeout, 2)))
+                events = collect_events()
+                for event in events:
+                    yield event
+                if ps.state != PSInvocationState.RUNNING:
+                    break
+                if not events:
+                    yield {"idle": True}
 
-            # progress
-            for prog in ps.streams.progress:
-                activity = getattr(prog, "activity", "")
-                status   = getattr(prog, "status_description", "")
-                yield {"progress": str(status or activity)}
+            self.consecutive_timeouts = 0
 
         except Exception as e:
             err_msg = str(e)
@@ -190,6 +223,7 @@ class Runspace:
             yield {"error": err_msg}
         finally:
             self.command_id = None
+            self._active_ps = None
             try:
                 if "ps" in locals() and hasattr(ps, "output") and hasattr(ps.output, "clear"):
                     ps.output.clear()
@@ -200,7 +234,9 @@ class Runspace:
     def interrupt(self):
         """Interrupts in-flight execution if supported by underlying pool."""
         try:
-            if self._pool and hasattr(self._pool, "disconnect"):
-                pass
-        except Exception:
-            pass
+            if self._active_ps is not None:
+                self._active_ps.stop()
+                return True
+        except Exception as exc:
+            logging.debug("Failed to stop active PowerShell pipeline: %s", exc)
+        return False

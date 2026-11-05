@@ -60,43 +60,44 @@ class Socks5Server:
                 break
 
     def _handle_client(self, client_sock: socket.socket, addr: tuple):
+        remote_sock = None
         try:
             client_sock.settimeout(15.0)
             # 1. Handshake (RFC 1928)
-            ver, nmethods = client_sock.recv(2)
+            ver, nmethods = self._recv_exact(client_sock, 2)
             if ver != 5:
-                client_sock.close()
                 return
-            methods = client_sock.recv(nmethods)
+            methods = self._recv_exact(client_sock, nmethods)
+            if 0 not in methods:
+                client_sock.sendall(b"\x05\xff")
+                return
             # Send NO_AUTH (0x00)
             client_sock.sendall(b"\x05\x00")
 
             # 2. Request details
-            ver, cmd, rsv, atyp = client_sock.recv(4)
+            ver, cmd, rsv, atyp = self._recv_exact(client_sock, 4)
+            if ver != 5 or rsv != 0:
+                return
             if cmd != 1:  # Only CONNECT supported
                 client_sock.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")  # Command not supported
-                client_sock.close()
                 return
 
             if atyp == 1:  # IPv4
-                dst_addr = socket.inet_ntoa(client_sock.recv(4))
+                dst_addr = socket.inet_ntoa(self._recv_exact(client_sock, 4))
             elif atyp == 3:  # Domain name
-                addr_len = client_sock.recv(1)[0]
-                dst_addr = client_sock.recv(addr_len).decode("utf-8", errors="replace")
+                addr_len = self._recv_exact(client_sock, 1)[0]
+                dst_addr = self._recv_exact(client_sock, addr_len).decode("idna")
             elif atyp == 4:  # IPv6
-                dst_addr = socket.inet_ntop(socket.AF_INET6, client_sock.recv(16))
+                dst_addr = socket.inet_ntop(socket.AF_INET6, self._recv_exact(client_sock, 16))
             else:
                 client_sock.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
-                client_sock.close()
                 return
 
-            dst_port = struct.unpack(">H", client_sock.recv(2))[0]
+            dst_port = struct.unpack(">H", self._recv_exact(client_sock, 2))[0]
 
             # 3. Connect to destination
             try:
-                remote_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote_sock.settimeout(10.0)
-                remote_sock.connect((dst_addr, dst_port))
+                remote_sock = socket.create_connection((dst_addr, dst_port), timeout=10.0)
                 remote_sock.settimeout(None)
                 client_sock.settimeout(None)
                 # Success response
@@ -104,7 +105,6 @@ class Socks5Server:
             except Exception as e:
                 logging.debug("SOCKS5 connect failure to %s:%s: %s", dst_addr, dst_port, e)
                 client_sock.sendall(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")  # Connection refused
-                client_sock.close()
                 return
 
             # 4. Bidirectional transfer
@@ -125,6 +125,22 @@ class Socks5Server:
                 client_sock.close()
             except Exception:
                 pass
+            if remote_sock is not None:
+                try:
+                    remote_sock.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _recv_exact(sock: socket.socket, size: int) -> bytes:
+        """Read an exact SOCKS frame field or fail on a truncated connection."""
+        data = bytearray()
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("truncated SOCKS5 request")
+            data.extend(chunk)
+        return bytes(data)
 
     def _pipe_sockets(self, s1: socket.socket, s2: socket.socket):
         sockets = [s1, s2]
@@ -151,6 +167,12 @@ class PortForwarder:
         self._lock = threading.Lock()
 
     def start_local_forward(self, local_port: int, remote_host: str, remote_port: int, bind_host: str = "127.0.0.1") -> int:
+        if not 0 <= local_port <= 65535:
+            raise ValueError("local port must be between 0 and 65535")
+        if not 1 <= remote_port <= 65535:
+            raise ValueError("remote port must be between 1 and 65535")
+        if not remote_host:
+            raise ValueError("remote host cannot be empty")
         with self._lock:
             fid = self._next_id
             self._next_id += 1
@@ -186,9 +208,7 @@ class PortForwarder:
     def _pipe_forward(self, client: socket.socket, rhost: str, rport: int):
         remote = None
         try:
-            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            remote.settimeout(10.0)
-            remote.connect((rhost, rport))
+            remote = socket.create_connection((rhost, rport), timeout=10.0)
             remote.settimeout(None)
             client.settimeout(None)
             sockets = [client, remote]
@@ -224,6 +244,11 @@ class PortForwarder:
                     pass
                 return True
             return False
+
+    def stop_all(self) -> int:
+        with self._lock:
+            ids = list(self.forwards)
+        return sum(1 for fid in ids if self.stop_forward(fid))
 
     def list_forwards(self) -> list:
         with self._lock:

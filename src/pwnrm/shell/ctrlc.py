@@ -7,9 +7,10 @@ from .ui import c, Y, DIM
 
 
 class CtrlCHandler:
-    def __init__(self, max_interrupts=4, timeout=5):
+    def __init__(self, max_interrupts=4, timeout=5, on_interrupt=None):
         self.max_interrupts = max_interrupts
         self.timeout        = timeout
+        self.on_interrupt   = on_interrupt
 
     def __enter__(self):
         self.interrupted      = 0
@@ -18,6 +19,13 @@ class CtrlCHandler:
 
         def handler(signum, frame):
             self.interrupted += 1
+            if self.interrupted == 1 and self.on_interrupt:
+                try:
+                    self.on_interrupt()
+                except Exception:
+                    # Signal handlers must never replace the user's Ctrl+C with
+                    # an unrelated callback traceback.
+                    pass
             if self.interrupted > 1:
                 n = self.max_interrupts - self.interrupted + 2
                 print()

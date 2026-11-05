@@ -33,7 +33,7 @@ def parse_replay_log(log_path: str) -> list[str]:
     return commands
 
 
-def main():
+def main() -> int:
     if sys.platform == "win32":
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -52,7 +52,7 @@ def main():
         transport = create_transport(args)
     except Exception as e:
         logging.error("Transport setup failed: %s", e)
-        sys.exit(1)
+        return 1
 
     tinfo = {
         "host": getattr(args, "target", "?"),
@@ -81,7 +81,9 @@ def main():
                 print(c(DIM, f"\n[~] Session duration: {elapsed}  |  Commands: {shell.cmd_count}\n"))
     except Exception as e:
         logging.error("Connection failed: %s", e)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
