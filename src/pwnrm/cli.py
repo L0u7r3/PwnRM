@@ -16,6 +16,54 @@ from .shell      import PwnShell
 from .shell.ui   import _BANNER, c, DIM, Y, G, R, BLD
 
 
+class _ConciseLoggingFilter(logging.Filter):
+    """Hide dependency tracebacks unless the operator explicitly enables debug."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not bool(record.exc_info or record.stack_info)
+
+
+def _install_concise_logging() -> None:
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if not any(isinstance(item, _ConciseLoggingFilter) for item in handler.filters):
+            handler.addFilter(_ConciseLoggingFilter())
+
+
+def _exception_chain(exc: BaseException):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _connection_failure_message(exc: BaseException, transport, timeout: int) -> str:
+    """Return a concise, actionable WinRM connection diagnostic."""
+    url = getattr(transport, "url", "")
+    parsed = urlparse(url if isinstance(url, str) else "")
+    host = parsed.hostname or "target"
+    port = parsed.port or (5986 if parsed.scheme == "https" else 5985)
+    chain = list(_exception_chain(exc))
+    names = {type(item).__name__.lower() for item in chain}
+    details = " ".join(str(item).lower() for item in chain)
+
+    if "connecttimeouterror" in names or "connecttimeout" in names or "connect timeout" in details:
+        return (
+            f"WinRM endpoint {host}:{port} did not accept a TCP connection within {timeout}s. "
+            "Check routing, the WinRM listener, and the active Windows Firewall profile "
+            "(use --debug for the dependency traceback)."
+        )
+    if "connectionrefusederror" in names or "connection refused" in details:
+        return (
+            f"WinRM endpoint {host}:{port} refused the TCP connection. "
+            "Check that the WinRM service and listener are enabled "
+            "(use --debug for the dependency traceback)."
+        )
+    return str(exc)
+
+
 def _display_host(transport, args) -> str:
     """Return a printable host without ever echoing inline credentials."""
     url = getattr(transport, "url", "")
@@ -67,6 +115,8 @@ def main() -> int:
     logging.getLogger().setLevel(logging.DEBUG if args.debug else logging.INFO)
     if args.debug:
         logging.debug(version.getInstallationPath())
+    else:
+        _install_concise_logging()
 
     timeout   = args.timeout
     command_failed = False
@@ -114,7 +164,7 @@ def main() -> int:
                 elapsed = str(datetime.now() - shell.start_time).split(".")[0]
                 print(c(DIM, f"\n[~] Session duration: {elapsed}  |  Commands: {shell.cmd_count}\n"))
     except Exception as e:
-        logging.error("Connection failed: %s", e)
+        logging.error("Connection failed: %s", _connection_failure_message(e, transport, timeout))
         return 1
     return 1 if command_failed else 0
 

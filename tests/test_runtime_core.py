@@ -3,6 +3,7 @@
 import hashlib
 import base64
 import io
+import logging
 import tempfile
 import unittest
 from datetime import datetime
@@ -114,6 +115,26 @@ class TestRuntimeCore(unittest.TestCase):
             patch("builtins.print"),
         ):
             self.assertEqual(cli.main(), 1)
+
+    def test_connect_timeout_has_short_actionable_diagnostic(self):
+        transport = SimpleNamespace(url="http://dc01:5985/wsman")
+        low_level = TimeoutError("timed out")
+        timeout = RuntimeError("connect timeout while opening socket")
+        timeout.__cause__ = low_level
+        message = cli._connection_failure_message(timeout, transport, 30)
+        self.assertIn("dc01:5985", message)
+        self.assertIn("Windows Firewall profile", message)
+        self.assertIn("--debug", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_concise_logging_filter_hides_exception_records(self):
+        record = logging.LogRecord(
+            "pypsrp.wsman", logging.ERROR, __file__, 1, "failed", (),
+            (RuntimeError, RuntimeError("offline"), None),
+        )
+        self.assertFalse(cli._ConciseLoggingFilter().filter(record))
+        record.exc_info = None
+        self.assertTrue(cli._ConciseLoggingFilter().filter(record))
 
     def test_cli_single_command_returns_failure_for_remote_error(self):
         parser = MagicMock()
