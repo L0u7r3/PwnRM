@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Parse Impacket's wrapped ticket bytes correctly and support service-ticket-only
+  S4U/constrained-delegation ccaches through a private normalized cache copy.
 - Install the Kerberos/GSSAPI and CredSSP extras required by the advertised
   `-k` and `--credssp` authentication modes.
 - Align the supported Python range with `pypsrp` and verify Python 3.10–3.14.

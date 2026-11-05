@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import struct
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from spnego import KerberosCCache
@@ -60,8 +61,11 @@ class TestAuthenticationDependencies(unittest.TestCase):
         )
 
     def test_kerberos_ccache_reaches_pyspnego(self):
+        ticket = SimpleNamespace(
+            service_principal=SimpleNamespace(components=["TERMSRV", "DC01"]),
+        )
         creds = KrbCredential(
-            "LAB.LOCAL", "user01", object(), object(),
+            "LAB.LOCAL", "user01", ticket, object(),
             ccache="FILE:/tmp/user01.ccache",
         )
         runspace = Runspace(
@@ -71,6 +75,8 @@ class TestAuthenticationDependencies(unittest.TestCase):
         self.assertIsInstance(session.auth.username, KerberosCCache)
         self.assertEqual(session.auth.username.ccache, "FILE:/tmp/user01.ccache")
         self.assertEqual(session.auth.auth_provider, "kerberos")
+        self.assertEqual(session.auth.service, "TERMSRV")
+        self.assertEqual(session.auth.hostname_override, "DC01.")
 
     def test_credssp_backend_can_be_built(self):
         transport = CredSSPTransport(

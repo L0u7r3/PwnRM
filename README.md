@@ -12,7 +12,7 @@
 ![PyPI](https://img.shields.io/pypi/v/pwnrm?style=for-the-badge&color=cyan&logo=pypi)
 [![Changelog](https://img.shields.io/badge/Changelog-v2.1.0-blueviolet?style=for-the-badge&logo=git)](CHANGELOG.md)
 ![Platform](https://img.shields.io/badge/Platform-Cross--Platform-orange?style=for-the-badge&logo=windows)
-[![Tests](https://img.shields.io/badge/Tests-51%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-54%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
 [![Documentation](https://img.shields.io/badge/Documentation-Complete_Suite-success?style=for-the-badge&logo=readthedocs)](docs/README.md)
 
 An operator-grade WinRM execution and red team platform for authorized Active Directory security assessments (2026–2027 TTPs): in-memory VSS extraction, coerced authentication suite, Windows LAPS & Server 2025 hunting, AD DACL privilege escalation scout, token impersonation, multi-session graph orchestration, in-band SOCKS5 multiplexing, full ADCS ESC1-ESC17+ (incl. WSUS abuse), Diamond Ticket suite, hybrid Entra ID pivoting, polymorphic evasion runtime, in-memory BloodHound collection, and structured loot pipeline - usable as a CLI tool **and** as a Python library.
@@ -82,6 +82,10 @@ pwnrm -u Administrator -H :aad3b435b51404eeaad3b435b51404ee dc01.corp.local
 
 # 3. Kerberos Authentication (ccache / KRB5CCNAME)
 pwnrm -u administrator@CORP.LOCAL -k --ccache /tmp/admin.ccache dc01.corp.local
+
+# Impacket S4U/constrained-delegation service tickets are supported directly.
+# Run PwnRM under faketime when the operator and DC clocks differ materially.
+pwnrm -k --ccache 'Administrator@TERMSRV_DC01@CORP.LOCAL.ccache' DC01
 
 # 4. Mutual TLS Client Certificate (ADCS ESC1 / ESC9 / Shadow Credentials)
 pwnrm -u administrator@CORP.LOCAL --pfx admin.pfx --pfx-pass secret https://dc01:5986
@@ -320,7 +324,7 @@ PwnRM/
 │   │   └── playbook.py        # Declarative Playbook Automation Engine
 │   ├── shell/                 # PwnShell v2.1 REPL, built-in commands, UI
 │   └── resources/             # adtriage.ps1 · shares.ps1 · sessions.ps1
-├── tests/                     # 51 Automated Unit & Security Regression Tests
+├── tests/                     # 54 Automated Unit & Security Regression Tests
 ├── docs/                      # Complete 6-Part Deep Technical Documentation Suite
 ├── CHANGELOG.md               # Full Release & Security Advisory History
 ├── pyproject.toml             # PyPI packaging (v2.1.0)

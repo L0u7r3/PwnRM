@@ -2,7 +2,7 @@
 core.utils — shared helpers (encoding, TLS, ccache / pfx loading)
 """
 
-import os, re, ssl, uuid, logging, tempfile
+import atexit, os, re, shutil, ssl, uuid, logging, tempfile
 from base64   import b64encode, b64decode
 from pathlib  import Path
 from urllib.parse import urlparse
@@ -120,9 +120,54 @@ def load_kerberos_ccache(ccache_path: Optional[str] = None) -> Tuple[str, str, T
     user   = "/".join(c["data"].decode() for c in cc.principal.components)
     cred   = cc.credentials[0]
     ticket = Ticket()
-    ticket.from_asn1(cred.ticket)
+    # CCache credentials wrap the DER ticket bytes in CountedOctetString.
+    # Ticket.from_asn1() accepts the encoded bytes (or a decoded ASN.1
+    # Ticket), not the ccache wrapper itself.
+    ticket.from_asn1(cred.ticket["data"])
     key    = Key(cred["key"]["keytype"], cred["key"]["keyvalue"])
     return domain, user, ticket, key
+
+
+def prepare_kerberos_ccache(ccache_path: str, ticket: Ticket) -> str:
+    """Return a FILE ccache path suitable for MIT Kerberos/GSSAPI.
+
+    MIT Kerberos canonicalizes host-based service names to lowercase before
+    looking them up in a ccache. Impacket-generated S4U caches preserve the
+    requested hostname's case, so a ticket such as ``TERMSRV/DC01`` otherwise
+    fails with ``Matching credential not found``. For service-ticket-only
+    caches, create a private normalized copy and leave the operator's original
+    ticket untouched. TGT caches can be consumed directly.
+    """
+    raw_path = ccache_path.removeprefix("FILE:")
+    source_path = Path(raw_path).resolve()
+    service_principal = getattr(ticket, "service_principal", None)
+    components = getattr(service_principal, "components", [])
+    if not components or str(components[0]).lower() == "krbtgt":
+        return f"FILE:{source_path}"
+
+    cache = CCache.loadFile(str(source_path))
+    for credential in cache.credentials:
+        server_components = credential["server"].components
+        if len(server_components) < 2:
+            continue
+        service = server_components[0]["data"]
+        if service.lower() == b"krbtgt":
+            continue
+        hostname = server_components[1]["data"]
+        server_components[1]["data"] = hostname.lower()
+
+    tmp_dir = tempfile.mkdtemp(prefix="pwnrm_ccache_")
+    os.chmod(tmp_dir, 0o700)
+    prepared_path = os.path.join(tmp_dir, "cache.ccache")
+    try:
+        cache.saveFile(prepared_path)
+        os.chmod(prepared_path, 0o600)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    atexit.register(lambda d=tmp_dir: shutil.rmtree(d, ignore_errors=True))
+    return f"FILE:{prepared_path}"
 
 
 # ── pfx loader ───────────────────────────────────────────────────────────────

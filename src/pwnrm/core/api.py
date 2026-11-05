@@ -13,7 +13,7 @@ from impacket.examples.utils import parse_target
 from .credentials import NTCredential, KrbCredential
 from .transports  import (Transport, ClientCertTransport, KerberosTransport,
                           CredSSPTransport, SPNEGOTransport)
-from .utils       import load_kerberos_ccache, load_pfx
+from .utils       import load_kerberos_ccache, load_pfx, prepare_kerberos_ccache
 
 
 def argument_parser() -> ArgumentParser:
@@ -144,6 +144,7 @@ def create_transport(args: Namespace) -> Transport:
         logging.info(f"[+] Kerberos transport as {domain}\\{username}")
         if ccache_path and ":" not in ccache_path:
             ccache_path = f"FILE:{os.path.abspath(ccache_path)}"
+        ccache_path = prepare_kerberos_ccache(ccache_path, ticket)
         creds = KrbCredential(
             domain, username, ticket, tgskey,
             password=password, ccache=ccache_path,

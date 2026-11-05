@@ -66,6 +66,20 @@ class Runspace:
             principal = (f"{creds.username}@{creds.domain.upper()}"
                          if creds.domain else creds.username)
             username = KerberosCCache(creds.ccache, principal=principal)
+            # S4U/constrained-delegation ccaches commonly contain only a
+            # service ticket (for example TERMSRV/DC01), not a TGT. Ask
+            # pyspnego for that exact SPN instead of its default HOST SPN.
+            service_principal = getattr(creds.ticket, "service_principal", None)
+            components = getattr(service_principal, "components", [])
+            if components and str(components[0]).lower() != "krbtgt":
+                extra_auth_kwargs["negotiate_service"] = str(components[0])
+                if len(components) > 1:
+                    # A trailing dot prevents MIT Kerberos from expanding a
+                    # short SPN hostname through DNS. It is removed from the
+                    # resulting principal, which then matches the lowercase
+                    # entry in the normalized temporary ccache.
+                    hostname = str(components[1]).rstrip(".")
+                    extra_auth_kwargs["negotiate_hostname_override"] = f"{hostname}."
 
         # ── Create pypsrp WSMan + RunspacePool ───────────────────────────────
         self._wsman = WSMan(
