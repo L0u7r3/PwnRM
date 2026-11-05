@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dependency and transport regression coverage across the supported Python
   matrix.
+- Add explicit `!creds --lsa` LSASS minidump staging with unique paths,
+  integrity metadata, bounded worker tracking, and partial-file cleanup.
+- Add `!noconsolation` native PE execution using SHA-256-pinned
+  No-Consolation/Invoke-Bof assets, plus managed PE loading. Output capture is
+  opt-in through `--capture-output`; the default starts a runspace-owned
+  background job with native output disabled and no loader timeout.
+- Add `!noconsolation --detached`, which hands verified in-memory assets to a
+  WMI-created process over a random named pipe and returns its independent PID,
+  plus a dedicated `!ligolo` alias for detached native Ligolo-ng agents.
 
 ## [2.1.0] - 2026-08-30
 

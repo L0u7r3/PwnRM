@@ -39,9 +39,16 @@ the data.
 
 ### Dynamic plugins and payloads
 
-An imported plugin is arbitrary Python. `!psrun`, `!netrun`, raw PowerShell,
-and playbooks can execute arbitrary authorized code. Ownership/permission and
-schema checks reduce unintended loading; they do not sandbox execution.
+An imported plugin is arbitrary Python. `!psrun`, `!netrun`,
+`!noconsolation`, raw PowerShell, and playbooks can execute arbitrary authorized
+code. Ownership/permission and schema checks reduce unintended loading; they
+do not sandbox execution.
+
+No-Consolation integration pins both third-party revisions and their SHA-256
+digests. The verified files are fetched by the operator process or read from an
+explicit `PWNRM_NOCONSOLATION_ASSET_DIR`; they are not bundled silently and the
+target is not asked to retrieve them. A valid digest proves identity with the
+pinned artifact, not that arbitrary executable code is safe.
 
 ## Authentication material
 
@@ -66,6 +73,26 @@ Engagement.
 
 VSS extraction creates a shadow copy and remote staged files. Shadow deletion
 is attempted in `finally`; staged files remain until operator cleanup.
+
+LSASS dump staging launches the built-in `comsvcs.dll` minidump entry point,
+creates a sensitive remote file, and may be blocked by PPL or endpoint controls.
+Failed/partial output is removed, but a successful dump intentionally remains
+until the operator downloads and deletes it.
+
+No-Consolation executes a native PE loader inside a PowerShell process. An
+invalid payload, missing dependency, or loader incompatibility can terminate
+the remote WinRM provider. Default background jobs are owned by the current
+runspace; closing the PwnRM session tears down that execution context. The
+explicit `--detached` mode instead creates a WMI-owned PowerShell process and
+hands it bytes over a random named pipe. It survives RunspacePool closure and
+must be stopped by PID; this is process independence, not reboot persistence.
+The process creation, encoded bootstrap command line, named-pipe traffic, and
+network activity remain visible to endpoint telemetry.
+
+`!ligolo` is a thin detached-launch alias and does not establish trust in a
+third-party agent binary. PwnRM neither pins nor downloads Ligolo-ng on the
+operator's behalf; the operator is responsible for source, build provenance,
+proxy configuration, certificates, and routes.
 
 ## Network side effects
 

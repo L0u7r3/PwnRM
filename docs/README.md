@@ -34,9 +34,9 @@ environment variables are disabled for WinRM sessions.
 ## Capability summary
 
 PwnRM provides remote PowerShell execution, S4U ccache support, interruptible
-pipelines, multi-session fan-out, SHA-256-verified transfers, in-memory script
-and .NET loading, WMI VSS staging, AD/Windows reconnaissance modules, and
-operator-side SOCKS5/TCP forwarding.
+pipelines, multi-session fan-out, SHA-256-verified transfers, in-memory script,
+.NET, and native PE loading, explicit LSASS/VSS staging, AD/Windows
+reconnaissance modules, and operator-side SOCKS5/TCP forwarding.
 
 The following are explicitly outside the implementation:
 

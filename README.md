@@ -78,11 +78,12 @@ still apply.
 | `!session list\|switch\|save\|exec-all` | Session inventory, switching, encrypted same-process metadata snapshot, concurrent command fan-out |
 | `!socks [PORT\|stop\|status]` | Direct local RFC 1928 CONNECT proxy; outbound connections originate from the operator host |
 | `!portfwd LPORT RHOST:RPORT` | Direct operator-side TCP forward; use `list` or `stop <ID\|all>` to manage it |
+| `!ligolo [--remote] AGENT [ARG..]` | Launch an operator-supplied Windows Ligolo-ng agent in memory inside a detached target process |
 | `!module list\|run <name>` | Built-in and permission-checked external module registry |
 | `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
 | `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
 | `!entra [-s]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
-| `!creds` | Vault metadata, DPAPI master-key, browser, history inventory, and current-user DPAPI unprotect |
+| `!creds` | Vault/DPAPI/browser/history inventory, current-user DPAPI unprotect, and explicit LSASS dump staging |
 | `!laps` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
 | `!acl` | Targeted or Tier-0 AD DACL inspection |
 | `!token` | Current privilege and process-token identity inventory |
@@ -94,6 +95,7 @@ still apply.
 | `!adtriage`, `!shares`, `!sessions`, `!sysinfo` | PowerShell 5.1-compatible host and AD reconnaissance |
 | `!upload`, `!download` | SHA-256-verified file transfer; directory downloads are zipped remotely |
 | `!psrun`, `!netrun` | HTTP(S) or remote-path in-memory PowerShell/.NET execution |
+| `!noconsolation [--capture-output\|--detached] ...` | Native PE execution through No-Consolation or managed PE loading; output capture is opt-in |
 | `!revshell IPv4 PORT` | Raw IPv4 reverse command shell |
 | `!playbook` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
 | `!loot`, `!opsec`, `!log`, `!stoplog` | Local artifact inventory, jitter profile, and transcript controls |
@@ -132,6 +134,16 @@ symbolic-link destinations and are created mode `0600` on POSIX.
 `!upload -xor` uses a random key generated for the current PwnRM process. The
 corresponding `!psrun -xor` or `!netrun -xor` must run in that same process;
 starting another PwnRM instance creates a different key.
+
+`!noconsolation` does not capture output unless `--capture-output` (alias
+`--capture`) is present. Without it, PwnRM starts a background runspace, asks
+the native loader not to collect output, and returns immediately. That default
+job remains tied to the current interactive session. Add `--detached` to move
+execution into a WMI-created PowerShell process fed through a named pipe; it
+survives RunspacePool closure and returns a target PID for later cleanup.
+`--detached` and output capture are mutually exclusive. See the
+[runtime documentation](docs/03_evasion_and_runtime_opsec.md#native-and-managed-pe-execution-noconsolation)
+for native/managed and local/remote examples.
 
 ## Python API
 
