@@ -110,7 +110,7 @@ else:  # pragma: no cover - prompt_toolkit is a declared runtime dependency
 
 # ── Command Registry (OPT-03) ────────────────────────────────────────────────
 COMMAND_REGISTRY = {
-    "Core Platform Commands (v2.1)": {
+    "Core Platform & Pivoting (v2.1)": {
         "!session [list|switch|save|exec-all]": "Multi-session manager & jump graph",
         "!socks [PORT|stop|status]": "Direct local SOCKS5 proxy (default: 1080)",
         "!portfwd [LPORT RHOST:RPORT|list|stop]": "Direct local TCP port forwarder",
@@ -120,18 +120,18 @@ COMMAND_REGISTRY = {
         "!opsec [stealth|balanced|aggressive|hybrid-cloud]": "Toggle execution jitter & profile",
         "!playbook [--list|--run <name>]": "Declarative red team playbook runner",
     },
-    "Identity & Active Directory Abuse (2026-2027 TTPs)": {
+    "Identity & Active Directory Assessment": {
         "!adcs [-q|--template <T>|--ca <CA>|--wsus]": "ADCS CA/template/ACL & WSUS triage",
         "!kerberos [--roast|--asrep|--dmsa|--diamond]": "Kerberos exposure, RBCD and dMSA triage",
         "!entra [-s]": "Entra join-state and cloud-cache inventory",
-        "!creds [--vault|--dpapi|--decrypt B64|--history|--browser|--lsa]": "Credential artifacts, DPAPI unprotect & LSASS dump",
+        "!creds [--vault|--dpapi|--decrypt B64|--history|--browser|--lsa] [--lsa-output PATH]": "Credential artifacts, DPAPI unprotect & LSASS dump",
         "!laps [-a|--encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
         "!acl [--target <T>|--tier0]": "Active Directory DACL & privilege escalation scout",
         "!token [--list|--privs]": "Process token inventory & privilege audit",
         "!bloodhound [-c <methods>]": "AD graph reconnaissance summary",
         "!lateral [--subnet <s>]": "Bounded subnet and service scout",
     },
-    "Authentication Probes, VSS & Staging": {
+    "Collection, Runtime & In-Memory Execution": {
         "!vss [sam|ntds] [--drive C:]": "WMI VSS hive/database staging (SAM/NTDS)",
         "!coerce --listener <IP> [--method webdav|smb|all]": "Outbound UNC authentication probe",
         "!evasion [--edr|--amsi|--etw]": "Runtime AMSI/ETW patch & EDR scout",
@@ -144,7 +144,7 @@ COMMAND_REGISTRY = {
         "!amsi": "Patch AmsiScanBuffer in-process (polymorphic)",
         "!psrun [-xor] URL": "Load & exec remote PS1",
         "!netrun [-xor] URL [ARG..]": "Load & exec remote .NET assembly",
-        "!noconsolation [--capture-output|--detached] [--native|--managed] SOURCE [ARG..]": "Run managed/native PE from memory",
+        "!noconsolation [--capture-output|--detached] [--native|--managed] [--remote] [--timeout SEC] SOURCE [ARG..]": "Run managed/native PE from memory",
         "!revshell IP PORT": "Raw Winsock reverse shell",
         "!log / !stoplog": "Toggle session transcript",
         "exit / quit / Ctrl+D": "Close session",
@@ -234,10 +234,15 @@ class PwnShell:
           SOCKS5  : {c(M, socks_status)}
         """))
 
+        syntax_width = 45
         for section, cmds in COMMAND_REGISTRY.items():
             print(f"  {BLD}{section}{RST}")
             for cmd_syntax, desc in cmds.items():
-                print(f"    {c(Y, cmd_syntax):<45} {desc}")
+                if len(cmd_syntax) <= syntax_width:
+                    print(f"    {c(Y, cmd_syntax.ljust(syntax_width))} {desc}")
+                else:
+                    print(f"    {c(Y, cmd_syntax)}")
+                    print(f"      {desc}")
             print()
 
     # ── REPL ──────────────────────────────────────────────────────────────────

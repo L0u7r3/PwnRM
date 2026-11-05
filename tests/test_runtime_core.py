@@ -4,6 +4,7 @@ import hashlib
 import io
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,10 +13,44 @@ import pwnrm.cli as cli
 from pwnrm.core.runspace import Runspace
 from pwnrm.core.tunnel import PortForwarder
 from pwnrm.shell.ctrlc import CtrlCHandler
-from pwnrm.shell.pwnshell import PwnShell
+from pwnrm.shell.pwnshell import COMMAND_REGISTRY, PwnShell
 
 
 class TestRuntimeCore(unittest.TestCase):
+    def test_interactive_help_registry_is_current_and_truthful(self):
+        rendered = "\n".join(
+            f"{section}\n{syntax}\n{description}"
+            for section, commands in COMMAND_REGISTRY.items()
+            for syntax, description in commands.items()
+        )
+        self.assertIn("!ligolo [--remote] AGENT [ARG..]", rendered)
+        self.assertIn("!noconsolation [--capture-output|--detached]", rendered)
+        self.assertIn("[--remote] [--timeout SEC]", rendered)
+        self.assertIn("--lsa-output PATH", rendered)
+        self.assertNotIn("In-band SOCKS5 proxy", rendered)
+        self.assertNotIn("Full ADCS ESC1-ESC17+", rendered)
+        self.assertNotIn("--elevate", rendered)
+        self.assertNotIn("MS-RPRN", rendered)
+
+    @patch("builtins.print")
+    def test_interactive_help_wraps_long_command_syntax(self, print_mock):
+        shell = object.__new__(PwnShell)
+        shell.start_time = datetime.now()
+        shell.target_info = {"host": "DC01", "user": "Administrator"}
+        shell.socks_server = None
+        shell.cmd_count = 0
+        shell.opsec_profile = SimpleNamespace(mode="balanced")
+
+        shell.help()
+
+        lines = [str(call.args[0]) for call in print_mock.call_args_list if call.args]
+        syntax_index = next(
+            index for index, line in enumerate(lines)
+            if "!noconsolation [--capture-output|--detached]" in line
+        )
+        self.assertNotIn("Run managed/native PE from memory", lines[syntax_index])
+        self.assertIn("Run managed/native PE from memory", lines[syntax_index + 1])
+
     def test_cli_returns_failure_for_transport_setup_error(self):
         parser = MagicMock()
         parser.parse_args.return_value = SimpleNamespace(ts=False, debug=False, timeout="30")
