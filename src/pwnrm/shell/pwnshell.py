@@ -105,7 +105,7 @@ COMMAND_REGISTRY = {
         "!lateral [--subnet <s>]": "Subnet scout & lateral movement engine",
     },
     "Coercion, In-Memory Hives & Staging": {
-        "!vss [--drive C:|--sam|--ntds|--clean]": "In-memory VSS shadow copy hive extractor (SAM/NTDS)",
+        "!vss [sam|ntds] [--drive C:]": "In-memory VSS shadow copy hive extractor (SAM/NTDS)",
         "!coerce --listener <IP> [--method M]": "Coerced auth engine (WebDAV, MS-RPRN, MS-EFSR)",
         "!evasion [--edr|--amsi|--etw]": "Polymorphic AMSI/ETW bypass & EDR scout",
         "!adtriage [-q]": "AD post-auth quick triage",

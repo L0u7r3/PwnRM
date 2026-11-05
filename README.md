@@ -12,7 +12,7 @@
 ![PyPI](https://img.shields.io/pypi/v/pwnrm?style=for-the-badge&color=cyan&logo=pypi)
 [![Changelog](https://img.shields.io/badge/Changelog-v2.1.0-blueviolet?style=for-the-badge&logo=git)](CHANGELOG.md)
 ![Platform](https://img.shields.io/badge/Platform-Cross--Platform-orange?style=for-the-badge&logo=windows)
-[![Tests](https://img.shields.io/badge/Tests-54%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-57%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
 [![Documentation](https://img.shields.io/badge/Documentation-Complete_Suite-success?style=for-the-badge&logo=readthedocs)](docs/README.md)
 
 An operator-grade WinRM execution and red team platform for authorized Active Directory security assessments (2026–2027 TTPs): in-memory VSS extraction, coerced authentication suite, Windows LAPS & Server 2025 hunting, AD DACL privilege escalation scout, token impersonation, multi-session graph orchestration, in-band SOCKS5 multiplexing, full ADCS ESC1-ESC17+ (incl. WSUS abuse), Diamond Ticket suite, hybrid Entra ID pivoting, polymorphic evasion runtime, in-memory BloodHound collection, and structured loot pipeline - usable as a CLI tool **and** as a Python library.
@@ -127,7 +127,7 @@ PwnRM v2.1 provides 13 specialized built-in modules alongside core platform comm
 | | `!token [--list, --privs, --elevate]` | Process token hunter & in-memory impersonation suite |
 | | `!bloodhound [-c <methods>]` | In-memory Active Directory graph collector (BloodHound CE) |
 | | `!lateral [--subnet <s>]` | Subnet scout & lateral movement engine |
-| **In-Memory & Staging** | `!vss [--drive C:, --sam, --ntds, --clean]` | In-memory VSS shadow copy hive extractor (SAM/SYSTEM/NTDS) |
+| **In-Memory & Staging** | `!vss [sam\|ntds] [--drive C:]` | In-memory VSS shadow copy hive extractor (SAM/SYSTEM/NTDS) |
 | | `!coerce --listener <IP> [--method M]` | Coerced authentication engine (WebDAV, MS-RPRN, MS-EFSR, DFS) |
 | | `!evasion [--edr, --amsi, --etw]` | Polymorphic AMSI/ETW memory patching & EDR scout |
 | | `!download RPATH [LPATH]` | Pull file/dir from target (dirs auto-zipped) |
@@ -154,11 +154,14 @@ Extracts locked credentials databases (`SAM`, `SYSTEM`, `SECURITY`, and `NTDS.di
 - **Forensic Hygiene**: Instantly calls `.Delete()` on the created shadow copy upon extraction, leaving zero residual shadow copies on disk.
 - **Commands**:
   ```powershell
-  !vss                    # Extract SAM and SYSTEM from C:
-  !vss --drive E:         # Extract from alternate volume
-  !vss --ntds             # Extract active NTDS.dit and SYSTEM on Domain Controllers
-  !vss --clean            # Enforce cleanup of lingering shadow copies
+  !vss                    # Auto-select SAM or NTDS based on the host role
+  !vss sam                # Force SAM, SYSTEM, and SECURITY extraction
+  !vss ntds               # Force active NTDS.dit and SYSTEM extraction
+  !vss sam --drive E:     # Extract from an alternate volume
   ```
+
+The created shadow copy is always deleted in a `finally` block. `--sam` and
+`--ntds` remain accepted as aliases for compatibility.
 
 ### 2. Coerced Authentication Engine (`!coerce`)
 Triggers outbound authentication from the target machine account or server to an operator listener (Responder / `ntlmrelayx`), supporting 4 distinct coercion methods:
@@ -324,7 +327,7 @@ PwnRM/
 │   │   └── playbook.py        # Declarative Playbook Automation Engine
 │   ├── shell/                 # PwnShell v2.1 REPL, built-in commands, UI
 │   └── resources/             # adtriage.ps1 · shares.ps1 · sessions.ps1
-├── tests/                     # 54 Automated Unit & Security Regression Tests
+├── tests/                     # 57 Automated Unit & Security Regression Tests
 ├── docs/                      # Complete 6-Part Deep Technical Documentation Suite
 ├── CHANGELOG.md               # Full Release & Security Advisory History
 ├── pyproject.toml             # PyPI packaging (v2.1.0)

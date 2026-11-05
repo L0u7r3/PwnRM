@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Generate valid PowerShell VSS mode selection, accept the documented
+  interactive `!vss sam` / `!vss ntds` forms, and honor an explicit SAM mode
+  on domain controllers.
 - Parse Impacket's wrapped ticket bytes correctly and support service-ticket-only
   S4U/constrained-delegation ccaches through a private normalized cache copy.
 - Install the Kerberos/GSSAPI and CredSSP extras required by the advertised

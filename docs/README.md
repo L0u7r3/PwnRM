@@ -257,7 +257,7 @@ docs/
   - `--list`: Maps active process tokens across logon sessions.
 
 #### `!vss`
-- **Syntax**: `!vss [--drive <D:> | --sam | --ntds | --clean]`
+- **Syntax**: `!vss [sam|ntds] [--drive <D:>]` (`--sam` and `--ntds` are aliases)
 - **Subsystem**: `pwnrm.modules.vss.VSSModule`
 - **OPSEC Tier**: 🟢 **Low** (Zero `vssadmin.exe` / `ntdsutil.exe` execution; WMI COM reflection only)
 - **Detailed Explanation**: In-memory Volume Shadow Copy Service hive extractor:
@@ -352,8 +352,11 @@ test_run_with_flags (test_token.TestTokenModule) ... ok
 test_port_forwarder_lifecycle (test_tunnel.TestTunnel) ... ok
 test_socks5_lifecycle (test_tunnel.TestTunnel) ... ok
 test_module_metadata (test_vss.TestVSSModule) ... ok
+test_conflicting_modes_are_rejected (test_vss.TestVSSModule) ... ok
+test_invalid_drive_is_rejected (test_vss.TestVSSModule) ... ok
+test_positional_modes_match_interactive_usage (test_vss.TestVSSModule) ... ok
 test_run_custom_drive_and_ntds (test_vss.TestVSSModule) ... ok
 test_run_default_options (test_vss.TestVSSModule) ... ok
 
-54 passed — OK (100% Passed)
+57 passed — OK (100% Passed)
 ```
