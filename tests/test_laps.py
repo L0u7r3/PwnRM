@@ -3,6 +3,8 @@ tests.test_laps — Unit tests for LAPSModule (Windows LAPS & Server 2025 Hunter
 """
 
 import unittest
+import base64
+import re
 from unittest.mock import MagicMock
 from pwnrm.modules.laps import LAPSModule
 
@@ -29,11 +31,20 @@ class TestLAPSModule(unittest.TestCase):
         self.mock_shell.run_with_interrupt.assert_called_once()
         cmd = self.mock_shell.run_with_interrupt.call_args[0][0]
         self.assertIn("Invoke-Expression", cmd)
+        encoded = re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)
+        script = base64.b64decode(encoded).decode("utf-16le")
+        self.assertIn("if ($false)", script)
+        self.assertNotIn("if (false", script)
+        self.assertIn('{ "Red" } else { "Green" }', script)
 
     def test_run_with_encrypted_flag(self):
         res = self.mod.run(self.mock_shell, ["--encrypted"])
         self.assertEqual(res.get("status"), "completed")
         self.mock_shell.run_with_interrupt.assert_called_once()
+        cmd = self.mock_shell.run_with_interrupt.call_args[0][0]
+        encoded = re.search(r"FromBase64String\('([^']+)'\)", cmd).group(1)
+        script = base64.b64decode(encoded).decode("utf-16le")
+        self.assertIn("if ($true)", script)
 
 
 if __name__ == "__main__":

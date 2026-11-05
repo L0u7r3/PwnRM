@@ -7,7 +7,7 @@ Discovers privilege escalation vectors: GenericAll, WriteDacl, WriteOwner, Gener
 from typing import List, Any
 from . import BaseModule
 from ..shell.ui import c, R, G, Y, B, M, C, DIM, BLD, RST
-from ..shell.commands import b64str
+from ..shell.commands import b64str, str_b64
 
 
 class ACLModule(BaseModule):
@@ -27,6 +27,9 @@ class ACLModule(BaseModule):
             if a in ("-t", "--target") and i + 1 < len(args):
                 target_obj = args[i + 1]
 
+        target_expr = str_b64(target_obj)
+        tier0_ps = "$true" if tier0_deep else "$false"
+
         shell.write_info(c(M + BLD, "  [*] PwnRM ACL Hunter — starting DACL privilege escalation audit on Active Directory objects..."))
 
         ps = f"""
@@ -41,6 +44,8 @@ $configNC = $root.configurationNamingContext
 
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $meSam = ($currentUser -split '\\\\')[-1]
+$targetObj = {target_expr}
+$tier0Deep = {tier0_ps}
 Write-Host "  [*] Current Identity : $currentUser" -ForegroundColor White
 
 $targets = @(
@@ -52,8 +57,31 @@ $targets = @(
     "CN=Domain Controllers,CN=Users,$defaultNC"
 )
 
-if ('{target_obj}') {{
-    $targets = @('{target_obj}')
+if ($targetObj) {{
+    if ($targetObj -like "LDAP://*") {{
+        $targets = @($targetObj)
+    }} elseif ($targetObj -match '^[A-Za-z][A-Za-z0-9-]*=') {{
+        $targets = @($targetObj)
+    }} else {{
+        $escapedTarget = $targetObj.Replace('\\', '\\5c').Replace('*', '\\2a').Replace('(', '\\28').Replace(')', '\\29').Replace(([char]0).ToString(), '\\00')
+        $targetSearcher = New-Object DirectoryServices.DirectorySearcher([adsi]"LDAP://$defaultNC")
+        $targetSearcher.Filter = "(|(sAMAccountName=$escapedTarget)(cn=$escapedTarget)(name=$escapedTarget))"
+        $targetResult = $targetSearcher.FindOne()
+        if ($targetResult) {{
+            $targets = @($targetResult.Properties['distinguishedname'][0])
+        }} else {{
+            Write-Host "  [-] Target AD object not found: $targetObj" -ForegroundColor Yellow
+            return
+        }}
+    }}
+}} elseif ($tier0Deep) {{
+    $tier0Searcher = New-Object DirectoryServices.DirectorySearcher([adsi]"LDAP://$defaultNC")
+    $tier0Searcher.Filter = "(|(adminCount=1)(objectClass=groupPolicyContainer))"
+    $tier0Searcher.PageSize = 500
+    $tier0Searcher.PropertiesToLoad.Add('distinguishedName') | Out-Null
+    $tier0Results = $tier0Searcher.FindAll()
+    $targets += @($tier0Results | ForEach-Object {{ $_.Properties['distinguishedname'][0] }})
+    $targets = @($targets | Where-Object {{ $_ }} | Select-Object -Unique)
 }}
 
 Write-Host "  [*] Auditing DACL permissions on Tier-0 target objects...`n" -ForegroundColor Gray
@@ -107,12 +135,12 @@ foreach ($t in $targets) {{
             }}
         }}
     }} catch {{
-        Write-Host "  [-] Could not read DACL for $t: $_" -ForegroundColor DarkGray
+        Write-Host "  [-] Could not read DACL for ${{t}}: $_" -ForegroundColor DarkGray
     }}
 }}
 
 Write-Host "`n[ACL Audit Summary]" -ForegroundColor Cyan
-Write-Host "  Discovered Exploitable DACL Rights: $vulnCount" -ForegroundColor $(if ($vulnCount -gt 0) { "Red" } else { "Green" })
+Write-Host "  Discovered Exploitable DACL Rights: $vulnCount" -ForegroundColor $(if ($vulnCount -gt 0) {{ "Red" }} else {{ "Green" }})
 Write-Host "`n  [*] Active Directory DACL audit complete." -ForegroundColor Cyan
 """
         encoded = b64str(ps.encode("utf-16le"))

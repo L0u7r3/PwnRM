@@ -21,6 +21,7 @@ class LAPSModule(BaseModule):
     def run(self, shell, args: List[str]) -> Any:
         show_all = "-a" in args or "--all" in args
         filter_encrypted = "--encrypted" in args
+        show_encrypted_ps = "$true" if (filter_encrypted or show_all) else "$false"
 
         shell.write_info(c(M + BLD, "  [*] PwnRM LAPS Hunter — scanning Active Directory for LAPS passwords (Legacy & Server 2025)..."))
 
@@ -80,7 +81,7 @@ foreach ($c in $comps) {{
     if ($modernEnc) {{
         $encCount++
         $encB64 = [Convert]::ToBase64String($modernEnc)
-        if ({str(filter_encrypted).lower()} -or {str(show_all).lower()}) {{
+        if ({show_encrypted_ps}) {{
             Write-Host "  [*] [MODERN LAPS ENCRYPTED BLOB] $sam ($dns)" -ForegroundColor Magenta
             Write-Host "      - OS         : $os" -ForegroundColor Gray
             Write-Host "      - Blob (B64) : $($encB64.Substring(0, [Math]::Min(40, $encB64.Length)))..." -ForegroundColor DarkGray
@@ -89,8 +90,8 @@ foreach ($c in $comps) {{
 }}
 
 Write-Host "`n[LAPS Audit Summary]" -ForegroundColor Cyan
-Write-Host "  Legacy LAPS Passwords Decrypted : $legacyCount" -ForegroundColor $(if ($legacyCount -gt 0) { "Red" } else { "Green" })
-Write-Host "  Modern LAPS Cleartext Passwords : $modernCount" -ForegroundColor $(if ($modernCount -gt 0) { "Red" } else { "Green" })
+Write-Host "  Legacy LAPS Passwords Decrypted : $legacyCount" -ForegroundColor $(if ($legacyCount -gt 0) {{ "Red" }} else {{ "Green" }})
+Write-Host "  Modern LAPS Cleartext Passwords : $modernCount" -ForegroundColor $(if ($modernCount -gt 0) {{ "Red" }} else {{ "Green" }})
 Write-Host "  Modern LAPS Encrypted Blobs     : $encCount" -ForegroundColor White
 
 if ($legacyCount -eq 0 -and $modernCount -eq 0 -and $encCount -eq 0) {{

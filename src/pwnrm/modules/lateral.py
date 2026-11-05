@@ -57,7 +57,7 @@ foreach ($t in $targets) {
                 # If WinRM port, execute WSMan identify micro-probe
                 if ($p -in @(5985, 5986)) {
                     $scheme = if ($p -eq 5986) { "https" } else { "http" }
-                    $wsmanUrl = "$scheme://$t`:$p/wsman"
+                    $wsmanUrl = "${scheme}://$t`:$p/wsman"
                     try {
                         $req = [System.Net.WebRequest]::Create($wsmanUrl)
                         $req.Method = "POST"

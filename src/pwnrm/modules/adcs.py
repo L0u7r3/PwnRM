@@ -154,7 +154,8 @@ if (Test-Path $wuPath) {
         Write-Host "  [!] [ESC17 DANGER] AcceptTrustedPublisherCerts is ENABLED (1)" -ForegroundColor Red
         Write-Host "      - Certificates from Enterprise CA Code Signing templates are trusted for updates!" -ForegroundColor DarkRed
     } else {
-        Write-Host "  [*] AcceptTrustedPublisherCerts : $($acceptTrusted ?? 0)" -ForegroundColor Gray
+        $acceptTrustedDisplay = if ($null -eq $acceptTrusted) { 0 } else { $acceptTrusted }
+        Write-Host "  [*] AcceptTrustedPublisherCerts : $acceptTrustedDisplay" -ForegroundColor Gray
     }
 } else {
     Write-Host "  [-] No local WSUS policy found under HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ForegroundColor Gray
