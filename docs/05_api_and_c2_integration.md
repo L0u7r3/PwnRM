@@ -277,7 +277,13 @@ transport_pth = SPNEGOTransport("http://192.168.1.50:5985/wsman", nt_creds)
 
 # Option B: Kerberos ccache Ticket
 domain, user, ticket, tgskey = load_kerberos_ccache("/tmp/admin.ccache")
-krb_creds = KrbCredential(domain=domain, username=user, ticket=ticket, tgskey=tgskey)
+krb_creds = KrbCredential(
+    domain=domain,
+    username=user,
+    ticket=ticket,
+    tgskey=tgskey,
+    ccache="FILE:/tmp/admin.ccache",
+)
 transport_krb = KerberosTransport("http://dc01.corp.local:5985/wsman", krb_creds)
 
 # Option C: ADCS Client Certificate (mTLS)

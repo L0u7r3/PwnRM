@@ -7,7 +7,7 @@ name = "pwnrm"
 version = "2.1.0"
 description = "Advanced WinRM / AD Post-Exploitation Platform (2026-2027 TTPs)"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "uziii2208"}
 ]
@@ -17,26 +17,27 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.15"
 dependencies = [
-    "impacket>=0.12.0",
-    "requests>=2.28.0",
-    "urllib3>=1.26.0",
-    "pyasn1>=0.4.8",
-    "pycryptodomex>=3.18.0",
-    "cryptography>=41.0.0",
-    "prompt-toolkit>=3.0.0",
-    "defusedxml>=0.7.1",
-    "pypsrp>=0.9.1",
+    "impacket>=0.12.0,<0.14",
+    "requests>=2.28.0,<3",
+    "urllib3>=1.26.0,<3",
+    "pyasn1>=0.4.8,<0.7",
+    "pycryptodomex>=3.18.0,<4",
+    "cryptography>=41.0.0,<51",
+    "prompt-toolkit>=3.0.0,<4",
+    "defusedxml>=0.7.1,<0.8",
+    "pypsrp[credssp]>=0.9.1,<0.10",
+    "pyspnego[kerberos]>=0.12.0,<0.13",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,7 @@ dev = [
     "pytest>=7.0.0",
     "build>=1.0.0",
     "twine>=4.0.0",
+    "pip-audit>=2.7.0",
 ]
 
 [project.scripts]
@@ -59,6 +61,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["pwnrm*"]
 
 [tool.setuptools.package-data]
 pwnrm = ["resources/*.ps1"]

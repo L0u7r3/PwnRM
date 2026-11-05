@@ -203,7 +203,7 @@ When multiplexing in-band SOCKS5 connections and port forwards over active PSRP 
 
 ## 10. Security Boundary Test Matrix & Verification Coverage
 
-Every gate in PwnRM's defense-in-depth architecture is validated with automated regression test suites under `tests/` (**41 tests, 100% pass rate**):
+Every gate in PwnRM's defense-in-depth architecture is validated with automated regression test suites under `tests/` (**51 tests, 100% pass rate**):
 
 | Security Gate | Target CWE | Test Suite Path | Verification Strategy |
 |---|---|---|---|

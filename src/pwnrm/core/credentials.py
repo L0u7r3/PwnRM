@@ -25,10 +25,12 @@ class NTCredential:
 
 
 class KrbCredential:
-    """Kerberos TGS ticket + session key (from ccache)."""
-    def __init__(self, domain: str, username: str, ticket: Any, tgskey: Any, password: str = ""):
+    """Kerberos ticket material and the ccache consumed by pyspnego."""
+    def __init__(self, domain: str, username: str, ticket: Any, tgskey: Any,
+                 password: str = "", ccache: Optional[str] = None):
         self.domain   = domain
         self.username = username
         self.password = password   # needed by CredSSP delegation
         self.ticket   = ticket
         self.tgskey   = tgskey
+        self.ccache   = ccache

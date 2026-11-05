@@ -11,9 +11,10 @@ from typing import Optional, Dict, Any, Generator
 
 from pypsrp.wsman      import WSMan
 from pypsrp.powershell  import RunspacePool, PowerShell
+from spnego import KerberosCCache
 
 from .credentials import NTCredential, KrbCredential
-from .transports  import (Transport, SPNEGOTransport, KerberosTransport,
+from .transports  import (Transport, BasicTransport, SPNEGOTransport, KerberosTransport,
                           CredSSPTransport, ClientCertTransport)
 
 
@@ -31,7 +32,9 @@ class Runspace:
 
         # Determine auth method from transport type
         extra_auth_kwargs: dict = {}
-        if isinstance(transport, ClientCertTransport):
+        if isinstance(transport, BasicTransport):
+            auth = "basic"
+        elif isinstance(transport, ClientCertTransport):
             auth = "certificate"
             # Forward client certificate material to pypsrp
             cert_data = getattr(transport.session, "cert", None)
@@ -47,18 +50,22 @@ class Runspace:
 
         # Extract credentials from transport
         creds    = getattr(transport, "creds", None)
-        username = ""
-        password = ""
+        username = None
+        password = None
         if isinstance(creds, NTCredential):
-            username = creds.username
-            password = creds.password
-            if not password and creds.nt_hash:
-                # pass-the-hash: prepend colon for NTLM hash format
-                password = f":{creds.nt_hash}"
-        elif isinstance(creds, KrbCredential):
-            username = (f"{creds.username}@{creds.domain}"
+            username = (f"{creds.domain}\\{creds.username}"
                         if creds.domain else creds.username)
             password = creds.password
+            if not password and creds.nt_hash:
+                # pyspnego recognizes hashes only in full LM:NT form.
+                empty_lm = "aad3b435b51404eeaad3b435b51404ee"
+                password = f"{empty_lm}:{creds.nt_hash}"
+        elif isinstance(creds, KrbCredential):
+            if not creds.ccache:
+                raise ValueError("Kerberos authentication requires a ccache path")
+            principal = (f"{creds.username}@{creds.domain.upper()}"
+                         if creds.domain else creds.username)
+            username = KerberosCCache(creds.ccache, principal=principal)
 
         # ── Create pypsrp WSMan + RunspacePool ───────────────────────────────
         self._wsman = WSMan(

@@ -75,6 +75,12 @@ class TSCredentials(univ.Sequence):
 
 # ── Transport base ───────────────────────────────────────────────────────────
 class Transport:
+    """Connection/authentication configuration consumed by :class:`Runspace`.
+
+    Runspace delegates the actual WS-Man handshake to pypsrp. The requests
+    session and ``send`` helpers remain for legacy programmatic callers.
+    """
+
     def __init__(self, url: str):
         self.url     = url
         self.ssl     = urlparse(url).scheme in ("https", "wss")
@@ -114,6 +120,7 @@ class Transport:
 class BasicTransport(Transport):
     def __init__(self, url: str, creds: NTCredential):
         super().__init__(url)
+        self.creds = creds
         token = b64str(f"{creds.username}:{creds.password}".encode())
         self.session.headers["Authorization"] = f"Basic {token}"
 
@@ -131,24 +138,24 @@ class SPNEGOTransport(Transport):
         super().__init__(url)
         self.creds = creds
         self.proxy: SPNEGOProxyNTLM | SPNEGOProxyKerberos | None = None
-        self._auth()
+        # Keep construction side-effect free. Runspace opens the canonical
+        # pypsrp connection; direct send() callers authenticate lazily below.
 
     def _auth(self):
-        cbt = None
+        gss_bindings = None
         if self.ssl:
             cert = get_server_certificate(self.url)
-            cbt  = "tls-server-end-point:" + SHA256.new(cert).hexdigest()
+            cert_hash = SHA256.new(cert).digest()
+            app_data = b"tls-server-end-point:" + cert_hash
+            gss_struct = bytes(16) + pack("<I", len(app_data)) + app_data
+            gss_bindings = MD5.new(gss_struct).digest()
 
         if isinstance(self.creds, NTCredential):
-            self.proxy = SPNEGOProxyNTLM(
-                self.creds.username, self.creds.password,
-                self.creds.domain,   self.creds.nt_hash, cbt=cbt
-            )
+            self.proxy = SPNEGOProxyNTLM(self.creds, gss_bindings=gss_bindings)
         elif isinstance(self.creds, KrbCredential):
-            self.proxy = SPNEGOProxyKerberos(
-                self.creds.domain, self.creds.username,
-                self.creds.ticket, self.creds.tgskey, cbt=cbt
-            )
+            self.proxy = SPNEGOProxyKerberos(self.creds, gss_bindings=gss_bindings)
+        else:
+            raise TypeError(f"Unsupported SPNEGO credential type: {type(self.creds).__name__}")
 
         token = self.proxy.step()
         self.session.headers["Authorization"] = f"Negotiate {b64str(token)}"
@@ -159,6 +166,8 @@ class SPNEGOTransport(Transport):
             self.session.headers["Authorization"] = f"Negotiate {b64str(token)}"
 
     def send(self, req: bytes | str) -> bytes:
+        if self.proxy is None:
+            self._auth()
         sig, msg = self.proxy.wrap(req.encode() if isinstance(req, str) else req)
         boundary = "Encrypted Boundary"
         body = (
@@ -186,33 +195,33 @@ class KerberosTransport(Transport):
         super().__init__(url)
         self.creds = creds
         self.proxy: SPNEGOProxyKerberos | None = None
-        self._auth()
+        # See SPNEGOTransport: pypsrp owns the normal Runspace handshake.
 
     def _auth(self):
-        cbt = None
+        gss_bindings = None
         if self.ssl:
             cert = get_server_certificate(self.url)
-            cbt  = "tls-server-end-point:" + SHA256.new(cert).hexdigest()
+            cert_hash = SHA256.new(cert).digest()
+            app_data = b"tls-server-end-point:" + cert_hash
+            gss_struct = bytes(16) + pack("<I", len(app_data)) + app_data
+            gss_bindings = MD5.new(gss_struct).digest()
 
-        spnego_proxy = SPNEGOProxyKerberos(
-            self.creds.domain, self.creds.username,
-            self.creds.ticket, self.creds.tgskey, cbt=cbt
-        )
+        spnego_proxy = SPNEGOProxyKerberos(self.creds, gss_bindings=gss_bindings)
         token_init_bytes = spnego_proxy.step()
 
         # Extract Kerberos AP_REQ token and frame per RFC 4121 / MS-WSMV §3.2.5.1
-        neg_token_init = decoder.decode(token_init_bytes, asn1Spec=SPNEGO_NegTokenInit())[0]
-        raw_mech_token = neg_token_init["mechToken"].asOctets()
-        mech_token = decoder.decode(raw_mech_token, asn1Spec=KRB5_AP_REQ())[0]
+        raw_mech_token = SPNEGO_NegTokenInit(token_init_bytes)["MechToken"]
         kerb_token = krb5_mech_indep_token_encode(
-            encoder.encode(mech_token),
-            b"\x01\x00"
+            "1.2.840.113554.1.2.2",
+            KRB5_AP_REQ + raw_mech_token,
         )
 
         self.session.headers["Authorization"] = f"Kerberos {b64str(kerb_token)}"
         self.proxy = spnego_proxy
 
     def send(self, req: bytes | str) -> bytes:
+        if self.proxy is None:
+            self._auth()
         sig, msg = self.proxy.wrap(req.encode() if isinstance(req, str) else req)
         boundary = "Encrypted Boundary"
         body = (
@@ -245,7 +254,7 @@ class CredSSPTransport(Transport):
         self.tls_in  = ssl.MemoryBIO()
         self.tls_out = ssl.MemoryBIO()
         self.tls_obj = self.tls_ctx.wrap_bio(self.tls_in, self.tls_out)
-        self._auth()
+        # Authentication is performed by pypsrp when Runspace is entered.
 
     def _auth(self):
         def _send_credssp(tsreq, phase_name="handshake"):
@@ -261,10 +270,7 @@ class CredSSPTransport(Transport):
                         raise TransportError(f"CredSSP: malformed token in {phase_name}: {e}") from e
             return None
 
-        proxy = SPNEGOProxyNTLM(
-            self.creds.username, self.creds.password,
-            self.creds.domain,   self.creds.nt_hash
-        )
+        proxy = SPNEGOProxyNTLM(self.creds)
 
         tsreq  = TSRequest.nego_response(proxy.step(), version=6)
         tsrsp1 = _send_credssp(tsreq, "NTLM Negotiate")

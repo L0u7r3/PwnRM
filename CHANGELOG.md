@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Install the Kerberos/GSSAPI and CredSSP extras required by the advertised
+  `-k` and `--credssp` authentication modes.
+- Align the supported Python range with `pypsrp` and verify Python 3.10–3.14.
+- Fix the PwnRM-owned SPNEGO proxy constructor calls and RFC 5929 channel
+  binding encoding instead of incorrectly attributing the crash to Impacket.
+- Defer network authentication until the runspace is opened, avoiding a
+  duplicate, incompatible handshake during transport construction.
+- Preserve the selected ccache for the pypsrp Kerberos backend, qualify NTLM
+  usernames with their domain, and normalize pass-the-hash credentials to the
+  `LM:NT` format required by pyspnego.
+- Harden the Debian/Kali installer with the missing venv and Kerberos build
+  dependencies, an isolated project copy, `pip check`, and auth-backend smoke
+  tests.
+- Use kernel-assigned ports in tunnel lifecycle tests so the Python matrix can
+  run concurrently without fixed-port collisions.
+
+### Added
+
+- Dependency and transport regression coverage across the supported Python
+  matrix.
+
 ## [2.1.0] - 2026-08-30
 
 ### Next-Gen Post-Exploitation Suite & Autonomous CI/CD Security Audit Pipeline

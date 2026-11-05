@@ -3,6 +3,7 @@ core.api — public CLI argument parser & transport factory
 """
 
 import logging
+import os
 from argparse     import ArgumentParser, RawDescriptionHelpFormatter, Namespace
 from urllib.parse import urlparse
 from typing import Optional, Union
@@ -136,11 +137,17 @@ def create_transport(args: Namespace) -> Transport:
 
     # 2. Kerberos (ccache)
     if getattr(args, "kerberos", False):
-        dom, user, ticket, tgskey = load_kerberos_ccache(getattr(args,"ccache",None))
+        ccache_path = getattr(args, "ccache", None) or os.environ.get("KRB5CCNAME", "")
+        dom, user, ticket, tgskey = load_kerberos_ccache(ccache_path)
         domain   = domain   or dom
         username = username or user
         logging.info(f"[+] Kerberos transport as {domain}\\{username}")
-        creds = KrbCredential(domain, username, ticket, tgskey, password=password)
+        if ccache_path and ":" not in ccache_path:
+            ccache_path = f"FILE:{os.path.abspath(ccache_path)}"
+        creds = KrbCredential(
+            domain, username, ticket, tgskey,
+            password=password, ccache=ccache_path,
+        )
         return KerberosTransport(url, creds)
 
     # 3. CredSSP
@@ -148,6 +155,8 @@ def create_transport(args: Namespace) -> Transport:
         nt_hash = ""
         if getattr(args,"hash",""):
             nt_hash = args.hash.split(":")[-1]
+        if nt_hash and not password:
+            raise ValueError("CredSSP requires a plaintext password; pass-the-hash is not supported")
         creds = NTCredential(domain, username, password, nt_hash)
         logging.info(f"[+] CredSSP transport as {domain}\\{username}")
         return CredSSPTransport(url, creds)

@@ -4,7 +4,7 @@ core.spnego — SPNEGO / Kerberos GSSAPI proxies
 
 import secrets
 from struct    import pack, unpack
-from datetime  import datetime, UTC
+from datetime  import datetime, timezone
 
 from pyasn1.codec.ber import encoder, decoder
 from pyasn1.type.univ import noValue
@@ -149,7 +149,7 @@ class SPNEGOProxyKerberos:
                               GSS_C_SEQUENCE_FLAG | GSS_C_MUTUAL_FLAG)
             if self.gss_bindings:
                 cksum["Bnd"] = self.gss_bindings
-            now  = datetime.now(UTC)
+            now  = datetime.now(timezone.utc)
             auth = Authenticator()
             seq_set(auth, "cname", user.components_to_asn1)
             auth["authenticator-vno"] = 5

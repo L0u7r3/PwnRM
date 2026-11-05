@@ -309,7 +309,7 @@ docs/
 
 ## 5. Test Suite & Verification Matrix
 
-The PwnRM test suite consists of **41 automated unit and security regression tests** passing with a **100% success rate**:
+The PwnRM test suite consists of **51 automated unit and security regression tests** passing with a **100% success rate**:
 
 ```powershell
 $env:PYTHONPATH="src"; python -m unittest discover -s tests -v
@@ -355,5 +355,5 @@ test_module_metadata (test_vss.TestVSSModule) ... ok
 test_run_custom_drive_and_ntds (test_vss.TestVSSModule) ... ok
 test_run_default_options (test_vss.TestVSSModule) ... ok
 
-Ran 41 tests in 0.862s — OK (100% Passed)
+51 passed — OK (100% Passed)
 ```

@@ -12,7 +12,7 @@
 ![PyPI](https://img.shields.io/pypi/v/pwnrm?style=for-the-badge&color=cyan&logo=pypi)
 [![Changelog](https://img.shields.io/badge/Changelog-v2.1.0-blueviolet?style=for-the-badge&logo=git)](CHANGELOG.md)
 ![Platform](https://img.shields.io/badge/Platform-Cross--Platform-orange?style=for-the-badge&logo=windows)
-[![Tests](https://img.shields.io/badge/Tests-41%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-51%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest)](tests/)
 [![Documentation](https://img.shields.io/badge/Documentation-Complete_Suite-success?style=for-the-badge&logo=readthedocs)](docs/README.md)
 
 An operator-grade WinRM execution and red team platform for authorized Active Directory security assessments (2026–2027 TTPs): in-memory VSS extraction, coerced authentication suite, Windows LAPS & Server 2025 hunting, AD DACL privilege escalation scout, token impersonation, multi-session graph orchestration, in-band SOCKS5 multiplexing, full ADCS ESC1-ESC17+ (incl. WSUS abuse), Diamond Ticket suite, hybrid Entra ID pivoting, polymorphic evasion runtime, in-memory BloodHound collection, and structured loot pipeline - usable as a CLI tool **and** as a Python library.
@@ -26,7 +26,19 @@ An operator-grade WinRM execution and red team platform for authorized Active Di
 <a id="installation"></a>
 ## 📦 Installation
 
-### pip (recommended)
+PwnRM supports CPython 3.10 through 3.14. The complete install includes the
+Kerberos/GSSAPI and CredSSP backends used by the corresponding CLI flags.
+
+### Fixed fork (recommended)
+
+```bash
+pipx install 'git+https://github.com/L0u7r3/PwnRM.git'
+
+# Or inside an existing virtual environment
+python -m pip install 'git+https://github.com/L0u7r3/PwnRM.git'
+```
+
+### PyPI (upstream releases)
 
 ```bash
 pip install pwnrm
@@ -38,7 +50,7 @@ pip install --upgrade pwnrm
 ### git clone + installer (Kali / Ubuntu / Debian)
 
 ```bash
-git clone https://github.com/uziii2208/PwnRM.git
+git clone https://github.com/L0u7r3/PwnRM.git
 cd PwnRM
 sudo bash install.sh
 ```
@@ -48,10 +60,12 @@ The installer creates a virtualenv at `/opt/pwnrm` and registers a global `pwnrm
 ### Manual / Developer Setup
 
 ```bash
-git clone https://github.com/uziii2208/PwnRM.git
+git clone https://github.com/L0u7r3/PwnRM.git
 cd PwnRM
 python3 -m venv venv && source venv/bin/activate
-pip install -e .
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m pip check
 ```
 
 ---
@@ -306,7 +320,7 @@ PwnRM/
 │   │   └── playbook.py        # Declarative Playbook Automation Engine
 │   ├── shell/                 # PwnShell v2.1 REPL, built-in commands, UI
 │   └── resources/             # adtriage.ps1 · shares.ps1 · sessions.ps1
-├── tests/                     # 41 Automated Unit & Security Regression Tests
+├── tests/                     # 51 Automated Unit & Security Regression Tests
 ├── docs/                      # Complete 6-Part Deep Technical Documentation Suite
 ├── CHANGELOG.md               # Full Release & Security Advisory History
 ├── pyproject.toml             # PyPI packaging (v2.1.0)
@@ -322,6 +336,8 @@ PwnRM/
 | Issue | Root Cause | Remediation |
 | :--- | :--- | :--- |
 | `pwnrm: command not found` | PATH not configured | Run `pip install pwnrm` or `sudo bash install.sh` |
+| `No module named 'gssapi'` / `requests_credssp` | Environment was installed with old incomplete metadata | Reinstall with `python -m pip install --upgrade --force-reinstall .` |
+| `SPNEGOProxyNTLM ... unexpected keyword argument 'cbt'` | Broken v2.1.0 transport constructor | Upgrade to this revision; pinning Impacket does not fix the PwnRM call site |
 | `KRB_AP_ERR_SKEW` | Clock desynchronization with KDC | Run `sudo ntpdate <DC_IP>` or configure chrony |
 | WinRM connection refused (5985/5986) | PSRemoting disabled on target | On target: `Enable-PSRemoting -Force` |
 | AMSI catches remote payloads | Strict runtime ScriptBlock inspection | Run `!evasion` or `!amsi` first, or stage via `!upload -xor` |

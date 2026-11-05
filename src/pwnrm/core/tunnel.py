@@ -33,6 +33,7 @@ class Socks5Server:
             self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_sock.bind((self.bind_host, self.bind_port))
+            self.bind_port = self.server_sock.getsockname()[1]
             self.server_sock.listen(50)
             self.is_running = True
             self._thread = threading.Thread(target=self._accept_loop, daemon=True)
@@ -156,6 +157,7 @@ class PortForwarder:
             srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             srv.bind((bind_host, local_port))
+            local_port = srv.getsockname()[1]
             srv.listen(10)
 
             f_info = {

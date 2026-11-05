@@ -9,7 +9,7 @@ PURPOSE:
 METHODOLOGY:
   1. AST parsing of all XML imports and parsing invocations across src/pwnrm/.
   2. Verification that standard xml.etree.ElementTree is defused with defusedxml.
-  3. Dependency checking for pinned defusedxml in requirements.txt.
+  3. Dependency checking for constrained defusedxml in pyproject.toml or requirements.txt.
   4. Inspection of exception handling surrounding XML deserialization sinks.
 
 LIMITATIONS:
@@ -80,40 +80,43 @@ class XMLAuditVisitor(ast.NodeVisitor):
 def audit_requirements_xml(root_dir: Path) -> List[Dict[str, Any]]:
     findings = []
     req_file = root_dir / "requirements.txt"
-    if not req_file.exists():
+    pyproject_file = root_dir / "pyproject.toml"
+    dependency_files = [path for path in (pyproject_file, req_file) if path.exists()]
+    if not dependency_files:
         return findings
 
-    content = req_file.read_text(encoding="utf-8", errors="replace")
     has_defused = False
     is_pinned = False
 
-    for line in content.splitlines():
-        line_s = line.strip()
-        if "defusedxml" in line_s:
-            has_defused = True
-            if ">=" in line_s or "==" in line_s:
-                is_pinned = True
+    for dependency_file in dependency_files:
+        content = dependency_file.read_text(encoding="utf-8", errors="replace")
+        for line in content.splitlines():
+            line_s = line.strip()
+            if "defusedxml" in line_s:
+                has_defused = True
+                if ">=" in line_s or "==" in line_s:
+                    is_pinned = True
 
     # CHECK-X2: defusedxml presence and pinning
     if not has_defused:
         finding = {
             "severity": "CRITICAL",
-            "file": "requirements.txt",
+            "file": "pyproject.toml",
             "line": 1,
-            "code_snippet": "requirements.txt",
+            "code_snippet": "project dependencies",
             "check_id": "CHECK-X2",
-            "message": "defusedxml is missing from requirements.txt. Must be pinned >= 0.7.1."
+            "message": "defusedxml is missing from project dependencies. Must be constrained >= 0.7.1."
         }
         findings.append(finding)
         print(f"[{finding['severity']}] {finding['file']}:{finding['line']} - {finding['message']}")
     elif not is_pinned:
         finding = {
             "severity": "HIGH",
-            "file": "requirements.txt",
+            "file": "pyproject.toml",
             "line": 1,
             "code_snippet": "defusedxml",
             "check_id": "CHECK-X2",
-            "message": "defusedxml version is not pinned in requirements.txt (e.g. defusedxml>=0.7.1)."
+            "message": "defusedxml version is not constrained in project dependencies (e.g. defusedxml>=0.7.1)."
         }
         findings.append(finding)
         print(f"[{finding['severity']}] {finding['file']}:{finding['line']} - {finding['message']}")

@@ -6,7 +6,7 @@
 #  Mode 1: git clone + sudo ./install.sh   → editable install into venv
 #  Mode 2: pip install pwnrm               → from PyPI (no script needed)
 # ─────────────────────────────────────────────────────────────────────────────
-set -e
+set -euo pipefail
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -37,18 +37,20 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 PYTHON_VERSION=$(python3 --version | cut -d' ' -f2)
-PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d'.' -f2)
 echo -e "${GREEN}[+] Python ${PYTHON_VERSION} found${NC}"
 
-if [[ "$PYTHON_MINOR" -lt 9 ]]; then
-    echo -e "${RED}[!] PwnRM requires Python >= 3.9 (found ${PYTHON_VERSION})${NC}"
+if ! python3 -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 15)))'; then
+    echo -e "${RED}[!] PwnRM requires Python >= 3.10 and < 3.15 (found ${PYTHON_VERSION})${NC}"
     exit 1
 fi
 
 # ── 2. System dependencies ───────────────────────────────────────────────────
 echo -e "${YELLOW}[*] Installing system dependencies...${NC}"
 apt-get update
-apt-get install -y git build-essential libssl-dev libffi-dev python3-dev
+apt-get install -y \
+    git build-essential pkg-config \
+    libssl-dev libffi-dev libkrb5-dev \
+    python3-dev python3-pip python3-venv
 
 # ── 3. Locate project & sanity check ─────────────────────────────────────────
 INSTALL_DIR="/opt/pwnrm"
@@ -63,7 +65,14 @@ fi
 if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
     echo -e "${YELLOW}[*] Copying project to ${INSTALL_DIR}...${NC}"
     mkdir -p "$INSTALL_DIR"
-    cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/"
+    # Copy only package/build inputs. This avoids recursively copying a local
+    # venv, Git metadata, caches, or operator artifacts into /opt/pwnrm.
+    cp -a "$SCRIPT_DIR/src" "$INSTALL_DIR/"
+    cp -a \
+        "$SCRIPT_DIR/pyproject.toml" \
+        "$SCRIPT_DIR/README.md" \
+        "$SCRIPT_DIR/LICENSE.md" \
+        "$INSTALL_DIR/"
     cd "$INSTALL_DIR"
 else
     cd "$INSTALL_DIR"
@@ -79,23 +88,14 @@ else
 fi
 
 VENV_PYTHON="$INSTALL_DIR/venv/bin/python3"
-VENV_PIP="$INSTALL_DIR/venv/bin/pip"
 
 # ── 5. Upgrade pip / setuptools / wheel ──────────────────────────────────────
 echo -e "${YELLOW}[*] Upgrading pip, setuptools, wheel...${NC}"
 "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[!] Failed to upgrade pip${NC}"
-    exit 1
-fi
 
 # ── 6. Install PwnRM as editable package ─────────────────────────────────────
 echo -e "${YELLOW}[*] Installing PwnRM (editable mode)...${NC}"
-"$VENV_PIP" install -e .
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[!] Failed to install PwnRM package${NC}"
-    exit 1
-fi
+"$VENV_PYTHON" -m pip install --upgrade -e .
 echo -e "${GREEN}[+] PwnRM package installed${NC}"
 
 # ── 7. Verify installation ───────────────────────────────────────────────────
@@ -112,12 +112,11 @@ fi
 from pwnrm import __version__
 from pwnrm.core import Runspace, create_transport, argument_parser
 from pwnrm.shell import PwnShell
+import gssapi, krb5, requests_credssp
 print(f'[+] PwnRM v{__version__} — all modules loaded successfully')
 "
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[!] Import verification FAILED${NC}"
-    exit 1
-fi
+"$VENV_PYTHON" -m pip check
+"$INSTALL_DIR/venv/bin/pwnrm" --help >/dev/null
 
 # ── 8. Create system-wide wrapper ─────────────────────────────────────────────
 echo -e "${YELLOW}[*] Creating system-wide wrapper at /usr/local/bin/pwnrm...${NC}"
