@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add explicit `-P` / `--protocol` selection for `auto`, WinRM, WMI, DCOM,
+  Task Scheduler, SMBExec, and PsExec, with short names and compatibility for
+  the former `--exec-method` interface.
+
 ### Fixed
 
 - Propagate remote PowerShell error records through the REPL, CLI single-command

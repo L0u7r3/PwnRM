@@ -35,7 +35,7 @@ class EvasionModule(BaseModule):
         if not getattr(getattr(shell, "runspace", None), "persistent", True) and selected.intersection({"amsi", "etw"}):
             message = (
                 "AMSI/ETW patches require a persistent WinRM process; reconnect with "
-                "--exec-method winrm or select only the edr inventory mode."
+                "--protocol winrm or select only the edr inventory mode."
             )
             shell.write_error(message)
             return {"status": "error", "error": message}

@@ -17,12 +17,13 @@ returns a configuration object. `Runspace` maps that object to pypsrp and owns
 the preferred WS-Man/PSRP connection. The older low-level SOAP helpers remain
 for compatibility and tests.
 
-`--exec-method auto` first checks the selected WinRM TCP endpoint with a short
+`--protocol auto` first checks the selected WinRM TCP endpoint with a short
 deadline. If it cannot open a PSRP runspace, `RemoteExecRunspace` tries
 `wmiexec`, `dcomexec`, `atexec`, `smbexec`, and `psexec` in that order. Each
 candidate must pass authentication, execution, and output retrieval; port
-reachability by itself never selects a backend. `--exec-method` can force any
-one backend, including `winrm`.
+reachability by itself never selects a backend. `--protocol` can force any one
+backend with `winrm`, `wmi`, `dcom`, `task`, `smb`, or `psexec`. The legacy
+`--exec-method` spelling and long backend names remain compatible.
 
 The Impacket adapter stages a BOM-marked PowerShell script and an output file
 under `ADMIN$\Temp`, launches it with a random name, and deletes both paths in a

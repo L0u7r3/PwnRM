@@ -18,6 +18,34 @@ from .utils       import load_kerberos_ccache, load_pfx, prepare_kerberos_ccache
 
 
 def argument_parser() -> ArgumentParser:
+    def execution_protocol(value: str) -> str:
+        aliases = {
+            "auto": "auto",
+            "winrm": "winrm",
+            "wsman": "winrm",
+            "psrp": "winrm",
+            "wmi": "wmiexec",
+            "wmiexec": "wmiexec",
+            "dcom": "dcomexec",
+            "dcomexec": "dcomexec",
+            "mmc": "dcomexec",
+            "task": "atexec",
+            "taskscheduler": "atexec",
+            "atexec": "atexec",
+            "smb": "smbexec",
+            "smbexec": "smbexec",
+            "scm": "smbexec",
+            "psexec": "psexec",
+            "remcom": "psexec",
+        }
+        normalized = value.strip().lower().replace("-", "").replace("_", "")
+        try:
+            return aliases[normalized]
+        except KeyError as exc:
+            raise ArgumentTypeError(
+                "protocol must be one of: auto, winrm, wmi, dcom, task, smb, psexec"
+            ) from exc
+
     def port_number(value: str) -> int:
         try:
             parsed = int(value)
@@ -80,7 +108,7 @@ def argument_parser() -> ArgumentParser:
             "Examples:\n"
             "  pwnrm -u Administrator -p 'P@ss1' 192.168.1.10\n"
             "  pwnrm -u user@DOMAIN -k --ccache /tmp/user.ccache dc01.domain.local\n"
-            "  pwnrm -k --exec-method wmiexec dc01.domain.local\n"
+            "  pwnrm -k --protocol wmi dc01.domain.local\n"
             "  pwnrm -u user@DOMAIN --pfx user.pfx --pfx-pass secret https://dc01:5986"
         ),
     )
@@ -114,11 +142,10 @@ def argument_parser() -> ArgumentParser:
     conn.add_argument("--timeout", type=positive_timeout, default=30,
         help="Per-request timeout in seconds (default: 30)")
     # Execution
-    parser.add_argument("--exec-method",
-        choices=("auto", "winrm", "wmiexec", "dcomexec", "atexec", "smbexec", "psexec"),
-        default="auto",
-        help=("Shell transport: auto tries WinRM then Impacket fallbacks "
-              "(default: auto)"))
+    parser.add_argument("-P", "--protocol", "--exec-method",
+        dest="exec_method", type=execution_protocol, metavar="PROTOCOL", default="auto",
+        help=("Execution protocol: auto, winrm, wmi, dcom, task, smb, or psexec "
+              "(default: auto; --exec-method is a compatibility alias)"))
     parser.add_argument("-X", metavar="CMD",
         help="Execute single command and exit (non-interactive)")
     parser.add_argument("--replay", metavar="LOGFILE",

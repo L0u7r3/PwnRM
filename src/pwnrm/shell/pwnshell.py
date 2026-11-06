@@ -243,7 +243,7 @@ class PwnShell:
             print(c(
                 Y,
                 "  [!] Stateless fallback: !amsi, AMSI/ETW patching, !noconsolation, "
-                "and !ligolo require --exec-method winrm.\n",
+                "and !ligolo require --protocol winrm.\n",
             ))
 
         syntax_width = 45
@@ -1227,7 +1227,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
         if not getattr(getattr(self, "runspace", None), "persistent", True):
             message = (
                 "No-Consolation requires a persistent WinRM runspace; reconnect with "
-                "--exec-method winrm. Stateless WMI/SMB backends create a new PowerShell process per command."
+                "--protocol winrm. Stateless WMI/SMB backends create a new PowerShell process per command."
             )
             self.write_error(message)
             return {"status": "error", "error": message}

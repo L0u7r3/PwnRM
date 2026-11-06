@@ -24,7 +24,7 @@ from pwnrm.core.transports import (
 
 
 class TestAuthenticationDependencies(unittest.TestCase):
-    def test_exec_method_defaults_to_auto_and_accepts_all_backends(self):
+    def test_protocol_defaults_to_auto_and_accepts_all_backends(self):
         parser = argument_parser()
         self.assertEqual(parser.parse_args(["host"]).exec_method, "auto")
         for method in ("winrm", "wmiexec", "dcomexec", "atexec", "smbexec", "psexec"):
@@ -33,6 +33,34 @@ class TestAuthenticationDependencies(unittest.TestCase):
                     parser.parse_args(["--exec-method", method, "host"]).exec_method,
                     method,
                 )
+
+    def test_protocol_short_names_and_aliases_are_normalized(self):
+        parser = argument_parser()
+        aliases = {
+            "auto": "auto",
+            "winrm": "winrm",
+            "psrp": "winrm",
+            "wsman": "winrm",
+            "wmi": "wmiexec",
+            "dcom": "dcomexec",
+            "task": "atexec",
+            "task-scheduler": "atexec",
+            "smb": "smbexec",
+            "scm": "smbexec",
+            "psexec": "psexec",
+            "remcom": "psexec",
+        }
+        for alias, expected in aliases.items():
+            with self.subTest(alias=alias):
+                self.assertEqual(
+                    parser.parse_args(["--protocol", alias, "host"]).exec_method,
+                    expected,
+                )
+        self.assertEqual(parser.parse_args(["-P", "wmi", "host"]).exec_method, "wmiexec")
+
+    def test_invalid_protocol_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            argument_parser().parse_args(["--protocol", "rdp", "host"])
 
     def test_complete_auth_stack_is_installed(self):
         for module_name in ("gssapi", "krb5", "requests_credssp"):

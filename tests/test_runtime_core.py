@@ -211,7 +211,7 @@ class TestRuntimeCore(unittest.TestCase):
         output = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
         self.assertIn("wmiexec", output)
         self.assertIn("stateless PowerShell", output)
-        self.assertIn("require --exec-method winrm", output)
+        self.assertIn("require --protocol winrm", output)
 
     def test_cli_returns_failure_for_transport_setup_error(self):
         parser = MagicMock()

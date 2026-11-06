@@ -67,8 +67,8 @@ pwnrm --pfx operator.pfx --pfx-pass 'password' dc01
 # Single command
 pwnrm -k --ccache /tmp/operator.ccache DC01 -X 'whoami'
 
-# Force one transport instead of automatic selection
-pwnrm -k --ccache /tmp/operator.ccache --exec-method wmiexec DC01
+# Force one protocol instead of automatic selection
+pwnrm -k --ccache /tmp/operator.ccache --protocol wmi DC01
 ```
 
 TLS certificates are verified by default. Use `--no-ssl-verify` only when the
@@ -78,7 +78,7 @@ still apply.
 
 ## Shell transport selection
 
-`--exec-method auto` is the default. PwnRM first performs a short TCP check for
+`--protocol auto` is the default. PwnRM first performs a short TCP check for
 the configured WinRM endpoint and opens its persistent PSRP runspace when it is
 available. Otherwise it tests authenticated execution and output retrieval in
 this least-intrusive order:
@@ -90,9 +90,10 @@ this least-intrusive order:
 5. `psexec` — temporary RemCom service as `SYSTEM`.
 
 The first backend that completes a real PowerShell/output probe is selected;
-open ports alone are not treated as proof. Force a method with
-`--exec-method winrm|wmiexec|dcomexec|atexec|smbexec|psexec`. Kerberos short
-hostnames are qualified with the credential domain for Impacket SPN lookup, so
+open ports alone are not treated as proof. Force a protocol with
+`--protocol winrm|wmi|dcom|task|smb|psexec` (or `-P PROTOCOL`). The longer
+backend names and the legacy `--exec-method` option remain accepted. Kerberos
+short hostnames are qualified with the credential domain for Impacket SPN lookup, so
 `pwnrm -k DC01` can reuse an S4U ccache even when its service entry names the
 FQDN.
 
