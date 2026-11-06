@@ -221,7 +221,6 @@ def main() -> int:
                     result = shell.repl(iter([args.X]))
                     command_failed = isinstance(result, dict) and result.get("status") in {"error", "failed", "interrupted"}
                 else:
-                    shell.help()
                     shell.repl()
             except EOFError:
                 pass

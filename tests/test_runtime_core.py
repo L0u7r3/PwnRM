@@ -147,6 +147,7 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa]", rendered)
         self.assertIn("!kerberos [roast|asrep|rbcd|dmsa|diamond]", rendered)
         self.assertIn("!evasion [edr|amsi|etw]", rendered)
+        self.assertIn("!help", rendered)
         self.assertIn("[--remote] [--timeout SEC]", rendered)
         self.assertIn("--lsa-output PATH", rendered)
         self.assertIn(
@@ -191,6 +192,7 @@ class TestRuntimeCore(unittest.TestCase):
         shell.help()
 
         lines = [str(call.args[0]) for call in print_mock.call_args_list if call.args]
+        self.assertFalse(any("██████╗" in line for line in lines))
         syntax_index = next(
             index for index, line in enumerate(lines)
             if "!noconsolation [native|managed] [--capture-output|--detached]" in line
@@ -212,6 +214,49 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertIn("wmiexec", output)
         self.assertIn("stateless PowerShell", output)
         self.assertIn("require --protocol winrm", output)
+
+    def test_repl_dispatches_explicit_help_command(self):
+        shell = self._bare_shell()
+        shell.update_cwd = MagicMock()
+        shell.cmd_count = 0
+        shell.opsec_profile = SimpleNamespace(jitter_sleep=MagicMock())
+        shell.help = MagicMock(return_value={"status": "help"})
+
+        result = shell.repl(inputs=["!help"])
+
+        self.assertEqual(result, {"status": "help"})
+        shell.help.assert_called_once_with()
+
+    @patch("builtins.print")
+    def test_interactive_startup_prints_one_banner_and_not_help(self, print_mock):
+        parser = MagicMock()
+        parser.parse_args.return_value = SimpleNamespace(
+            ts=False, debug=False, timeout=30, target="host", username="user",
+            replay=None, X=None, exec_method="auto",
+        )
+        transport = MagicMock()
+        transport.url = "http://host:5985/wsman"
+        transport.creds = SimpleNamespace(domain="LAB", username="user")
+        shell = MagicMock()
+        shell.start_time = datetime.now()
+        shell.cmd_count = 0
+        with (
+            patch("pwnrm.cli.argument_parser", return_value=parser),
+            patch("pwnrm.cli.create_transport", return_value=transport),
+            patch("pwnrm.cli.tcp_reachable", return_value=True),
+            patch("pwnrm.cli.Runspace") as runspace_type,
+            patch("pwnrm.cli.PwnShell", return_value=shell),
+        ):
+            runspace_type.return_value.__enter__.return_value = MagicMock()
+            self.assertEqual(cli.main(), 0)
+
+        shell.help.assert_not_called()
+        shell.repl.assert_called_once_with()
+        banners = [
+            call for call in print_mock.call_args_list
+            if call.args and "██████╗" in str(call.args[0])
+        ]
+        self.assertEqual(len(banners), 1)
 
     def test_cli_returns_failure_for_transport_setup_error(self):
         parser = MagicMock()

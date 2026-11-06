@@ -96,6 +96,7 @@ def argument_parser() -> ArgumentParser:
             "      Declarative red team playbook runner\n"
             "  !loot                                    View organized credentials & artifacts\n"
             "  !opsec     [stealth|balanced|aggressive] Toggle execution jitter & profile\n"
+            "  !help                                    Display every interactive command\n"
             "  !download  RPATH [LPATH]                 Pull file/dir from target\n"
             "  !upload    [--xor] LPATH                 Push file to target\n"
             "  !amsi                                    Patch AmsiScanBuffer in-process\n"

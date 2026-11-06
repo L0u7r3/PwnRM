@@ -137,8 +137,10 @@ but are not the documented interface.
 | `!revshell IPv4 PORT` | Raw IPv4 reverse command shell |
 | `!playbook [list\|run NAME\|run --file PATH]` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
 | `!loot`, `!opsec`, `!log`, `!stoplog` | Local artifact inventory, jitter profile, and transcript controls |
+| `!help` | Display the complete interactive command list and current syntax |
 
-Run `pwnrm -h` and `help` inside the shell for the current syntax.
+Run `pwnrm -h` or `!help` inside the shell for the current syntax. PwnRM does
+not print the full command list automatically when a session opens.
 
 ## Important capability boundaries
 

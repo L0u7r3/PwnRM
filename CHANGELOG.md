@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Print the PwnRM banner only once, stop dumping the full command list when an
+  interactive connection opens, and expose that list explicitly through
+  `!help`.
 - Propagate remote PowerShell error records through the REPL, CLI single-command
   mode, session fan-out, and playbooks instead of reporting false success.
 - Validate every implemented module selector and make ADCS, Kerberos, Entra,

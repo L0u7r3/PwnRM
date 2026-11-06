@@ -45,7 +45,7 @@ from ..core.noconsolation import (
 )
 from ..modules import ModuleManager
 
-from .ui       import R, G, Y, B, M, C, W, DIM, BLD, RST, c, _BANNER, _COMPLETIONS
+from .ui       import R, G, Y, B, M, C, W, DIM, BLD, RST, c, _COMPLETIONS
 from .ctrlc    import CtrlCHandler
 from .adtriage  import get_adtriage_ps
 from .shares    import get_shares_ps
@@ -121,6 +121,7 @@ COMMAND_REGISTRY = {
         "!loot": "View organized credentials & artifacts",
         "!opsec [stealth|balanced|aggressive|hybrid-cloud]": "Toggle execution jitter & profile",
         "!playbook [list|run <name>|run --file PATH]": "Declarative red team playbook runner",
+        "!help": "Display every interactive command and its current syntax",
     },
     "Identity & Active Directory Assessment": {
         "!adcs [--quick] [--template <T>] [--ca <CA>] [--alt SAN] [--wsus]": "ADCS CA/template/ACL & WSUS triage",
@@ -221,7 +222,7 @@ class PwnShell:
             self.stdout_log = None
         return {"status": "completed"}
 
-    # ── help / banner (OPT-03) ────────────────────────────────────────────────
+    # ── interactive help (OPT-03) ─────────────────────────────────────────────
     def help(self):
         elapsed = str(datetime.now() - self.start_time).split(".")[0]
         tgt = self.target_info.get("host","?")
@@ -231,7 +232,6 @@ class PwnShell:
         backend_mode = "persistent" if getattr(active_runspace, "persistent", True) else "stateless"
         socks_status = f"{self.socks_server.bind_port} (Active)" if (self.socks_server and self.socks_server.is_running) else "Inactive"
 
-        print(_BANNER)
         print(textwrap.dedent(f"""\
         {BLD}  Operator Platform Info{RST}
           Target  : {c(C,tgt)}    User: {c(G,usr)}
@@ -256,6 +256,7 @@ class PwnShell:
                     print(f"    {c(Y, cmd_syntax)}")
                     print(f"      {desc}")
             print()
+        return {"status": "help"}
 
     # ── REPL ──────────────────────────────────────────────────────────────────
     def repl(self, inputs=None):
@@ -284,6 +285,7 @@ class PwnShell:
                 ("!loot",       self._loot_dispatch),
                 ("!opsec",      self._opsec_dispatch),
                 ("!playbook",   self._playbook_dispatch),
+                ("!help",       lambda args: self._no_args_dispatch(args, self.help, "!help")),
                 ("!adcs",       lambda args: self.module_mgr.get_module("adcs").run(self, split_args(args))),
                 ("!kerberos",   lambda args: self.module_mgr.get_module("kerberos").run(self, split_args(args))),
                 ("!entra",      lambda args: self.module_mgr.get_module("entra").run(self, split_args(args))),
