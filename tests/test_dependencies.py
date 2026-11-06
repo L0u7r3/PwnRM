@@ -24,6 +24,16 @@ from pwnrm.core.transports import (
 
 
 class TestAuthenticationDependencies(unittest.TestCase):
+    def test_exec_method_defaults_to_auto_and_accepts_all_backends(self):
+        parser = argument_parser()
+        self.assertEqual(parser.parse_args(["host"]).exec_method, "auto")
+        for method in ("winrm", "wmiexec", "dcomexec", "atexec", "smbexec", "psexec"):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    parser.parse_args(["--exec-method", method, "host"]).exec_method,
+                    method,
+                )
+
     def test_complete_auth_stack_is_installed(self):
         for module_name in ("gssapi", "krb5", "requests_credssp"):
             with self.subTest(module=module_name):

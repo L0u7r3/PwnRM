@@ -23,7 +23,8 @@ and a prerequisite check is not described as a vulnerability confirmation.
 ## Supported runtime
 
 - CPython 3.10–3.14
-- `pypsrp` 0.9.x runspace backend
+- `pypsrp` 0.9.x persistent runspace backend
+- Impacket WMI, DCOM, Task Scheduler, SMBExec, and PsExec shell fallbacks
 - Windows PowerShell 5.1-compatible generated payloads
 - HTTP/HTTPS WinRM with NTLM/SPNEGO, pass-the-hash, Kerberos ccache, CredSSP,
   Basic when constructed through the API, or HTTPS client certificate

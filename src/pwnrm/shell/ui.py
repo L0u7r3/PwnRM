@@ -26,7 +26,7 @@ _BANNER = rf"""
 {G4}██╔═══╝ ██║███╗██║██║╚██╗██║██╔══██╗██║╚██╔╝██║
 {G5}██║     ╚███╔███╔╝██║ ╚████║██║  ██║██║ ╚═╝ ██║
 {G6}╚═╝      ╚══╝╚══╝ ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚═╝
-{RST}{DIM}    WinRM / Active Directory Assessment Toolkit  {BLD}v2.1.0{RST}
+{RST}{DIM}    Remote PowerShell / Active Directory Toolkit  {BLD}v2.1.0{RST}
 {DIM}  github.com/L0u7r3/PwnRM  ·  fork of uziii2208/PwnRM  ·  Authorized use only.{RST}
 """
 

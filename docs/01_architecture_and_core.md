@@ -5,15 +5,31 @@
 ```text
 CLI arguments
   -> create_transport()
-  -> Runspace(pypsrp.WSMan + RunspacePool)
+  -> WinRM reachability and authenticated execution selection
+     -> Runspace(pypsrp.WSMan + persistent RunspacePool), or
+     -> RemoteExecRunspace(Impacket WMI/DCOM/TSCH/SCMR/RemCom)
   -> PwnShell command dispatcher
   -> remote PowerShell pipeline or local subsystem
 ```
 
 `create_transport()` parses the target, validates authentication inputs, and
 returns a configuration object. `Runspace` maps that object to pypsrp and owns
-the actual WS-Man/PSRP connection. The older low-level SOAP helpers remain for
-compatibility and tests, but normal CLI execution always uses pypsrp.
+the preferred WS-Man/PSRP connection. The older low-level SOAP helpers remain
+for compatibility and tests.
+
+`--exec-method auto` first checks the selected WinRM TCP endpoint with a short
+deadline. If it cannot open a PSRP runspace, `RemoteExecRunspace` tries
+`wmiexec`, `dcomexec`, `atexec`, `smbexec`, and `psexec` in that order. Each
+candidate must pass authentication, execution, and output retrieval; port
+reachability by itself never selects a backend. `--exec-method` can force any
+one backend, including `winrm`.
+
+The Impacket adapter stages a BOM-marked PowerShell script and an output file
+under `ADMIN$\Temp`, launches it with a random name, and deletes both paths in a
+`finally` block. WMI and DCOM preserve the authenticated user. Task Scheduler,
+SMBExec, and PsExec execute as LocalSystem. Kerberos ccaches are passed through
+an isolated `KRB5CCNAME` context and short targets are domain-qualified for SPN
+lookup.
 
 ## Transport selection
 
@@ -53,6 +69,12 @@ directories and registered for process-exit cleanup.
 pipeline for each command. It polls with short operation timeouts so `Ctrl+C`
 can call `PowerShell.stop()` without making concurrent encrypted WS-Man
 requests.
+
+`RemoteExecRunspace` implements the same command-event interface but is
+stateless. It creates a fresh PowerShell process for every input, embeds the
+operator command as base64 inside a fixed wrapper, carries the last working
+directory forward, and removes private status records before displaying
+output. It cannot provide PSRP streaming or a portable process interrupt.
 
 Records are normalized into dictionaries:
 

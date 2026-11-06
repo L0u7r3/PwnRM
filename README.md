@@ -1,7 +1,9 @@
 # PwnRM
 
-PwnRM is a pypsrp-backed WinRM shell and Windows/Active Directory assessment
-toolkit for authorized engagements. This fork repairs the authentication and
+PwnRM is a remote PowerShell shell and Windows/Active Directory assessment
+toolkit for authorized engagements. It prefers a persistent pypsrp/WinRM
+runspace and automatically falls back to Impacket execution when WinRM is
+unavailable. This fork repairs the authentication and
 dependency stack, supports Impacket S4U service-ticket ccaches, restores
 PowerShell 5.1 compatibility, and turns previously decorative module options
 into tested behavior.
@@ -64,12 +66,42 @@ pwnrm --pfx operator.pfx --pfx-pass 'password' dc01
 
 # Single command
 pwnrm -k --ccache /tmp/operator.ccache DC01 -X 'whoami'
+
+# Force one transport instead of automatic selection
+pwnrm -k --ccache /tmp/operator.ccache --exec-method wmiexec DC01
 ```
 
 TLS certificates are verified by default. Use `--no-ssl-verify` only when the
 engagement explicitly requires it. If the operator clock differs from the KDC,
 run PwnRM in a correctly synchronized environment; Kerberos clock-skew rules
 still apply.
+
+## Shell transport selection
+
+`--exec-method auto` is the default. PwnRM first performs a short TCP check for
+the configured WinRM endpoint and opens its persistent PSRP runspace when it is
+available. Otherwise it tests authenticated execution and output retrieval in
+this least-intrusive order:
+
+1. `wmiexec` — WMI/DCOM as the authenticated user;
+2. `dcomexec` — MMC20 DCOM as the authenticated user;
+3. `atexec` — Task Scheduler as `SYSTEM`;
+4. `smbexec` — transient service as `SYSTEM`;
+5. `psexec` — temporary RemCom service as `SYSTEM`.
+
+The first backend that completes a real PowerShell/output probe is selected;
+open ports alone are not treated as proof. Force a method with
+`--exec-method winrm|wmiexec|dcomexec|atexec|smbexec|psexec`. Kerberos short
+hostnames are qualified with the credential domain for Impacket SPN lookup, so
+`pwnrm -k DC01` can reuse an S4U ccache even when its service entry names the
+FQDN.
+
+Impacket fallbacks are stateless PowerShell: each input runs in a fresh process
+and PwnRM carries the working directory forward. Scripts and output are staged
+under `%SystemRoot%\Temp` with random names and removed after every command.
+The shell identifies the active backend in `help`. Process-scoped features
+that require one persistent runspace should be used with `winrm`; ordinary
+PowerShell and self-contained modules work through the fallback adapter.
 
 ## Interactive commands
 
@@ -129,7 +161,8 @@ These distinctions are deliberate and covered by regression tests:
   copied hives or `ntds.dit`, streams them for local parsing, then verifies
   deletion of the remote staging directory.
 - `WebSocketTransport` is retained only as an import-compatible placeholder and
-  fails explicitly. Supported runspaces use HTTP(S) through pypsrp.
+  fails explicitly. Persistent runspaces use HTTP(S) through pypsrp; automatic
+  command fallbacks use authenticated Impacket WMI/DCOM/SMB RPC transports.
 
 ## Transfer and staging notes
 

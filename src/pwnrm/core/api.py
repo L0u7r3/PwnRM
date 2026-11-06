@@ -38,7 +38,7 @@ def argument_parser() -> ArgumentParser:
 
     parser = ArgumentParser(
         prog="pwnrm",
-        description="PwnRM v2.1.0 — WinRM shell and Active Directory assessment toolkit",
+        description="PwnRM v2.1.0 — remote PowerShell and Active Directory assessment toolkit",
         formatter_class=RawDescriptionHelpFormatter,
         epilog=(
             "Shell commands (once connected):\n"
@@ -80,6 +80,7 @@ def argument_parser() -> ArgumentParser:
             "Examples:\n"
             "  pwnrm -u Administrator -p 'P@ss1' 192.168.1.10\n"
             "  pwnrm -u user@DOMAIN -k --ccache /tmp/user.ccache dc01.domain.local\n"
+            "  pwnrm -k --exec-method wmiexec dc01.domain.local\n"
             "  pwnrm -u user@DOMAIN --pfx user.pfx --pfx-pass secret https://dc01:5986"
         ),
     )
@@ -113,6 +114,11 @@ def argument_parser() -> ArgumentParser:
     conn.add_argument("--timeout", type=positive_timeout, default=30,
         help="Per-request timeout in seconds (default: 30)")
     # Execution
+    parser.add_argument("--exec-method",
+        choices=("auto", "winrm", "wmiexec", "dcomexec", "atexec", "smbexec", "psexec"),
+        default="auto",
+        help=("Shell transport: auto tries WinRM then Impacket fallbacks "
+              "(default: auto)"))
     parser.add_argument("-X", metavar="CMD",
         help="Execute single command and exit (non-interactive)")
     parser.add_argument("--replay", metavar="LOGFILE",

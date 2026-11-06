@@ -1,5 +1,5 @@
 """
-pwnrm.shell — Interactive WinRM shell
+pwnrm.shell — Interactive remote PowerShell shell
 """
 
 from .pwnshell import PwnShell

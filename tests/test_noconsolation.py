@@ -4,6 +4,7 @@ import base64
 import re
 import struct
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from pwnrm.core.noconsolation import (
@@ -114,6 +115,14 @@ class TestNoConsolationShell(unittest.TestCase):
         shell._run_native_memory = MagicMock(return_value={"status": "completed"})
         shell.run_sync = MagicMock(return_value="8\n")
         return shell
+
+    def test_stateless_backend_rejects_process_scoped_memory_execution(self):
+        shell = self.shell()
+        shell.runspace = SimpleNamespace(persistent=False)
+        result = shell.noconsolation("agent.exe")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("persistent WinRM", result["error"])
+        shell._run_native_memory.assert_not_called()
 
     def test_managed_payload_runs_in_background_without_capture_flag(self):
         shell = self.shell()

@@ -198,6 +198,21 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertNotIn("Run managed/native PE from memory", lines[syntax_index])
         self.assertIn("Run managed/native PE from memory", lines[syntax_index + 1])
 
+    @patch("builtins.print")
+    def test_interactive_help_identifies_stateless_backend(self, print_mock):
+        shell = object.__new__(PwnShell)
+        shell.start_time = datetime.now()
+        shell.target_info = {"host": "DC01", "user": "Administrator"}
+        shell.runspace = SimpleNamespace(backend_name="wmiexec", persistent=False)
+        shell.socks_server = None
+        shell.cmd_count = 0
+        shell.opsec_profile = SimpleNamespace(mode="balanced")
+        shell.help()
+        output = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertIn("wmiexec", output)
+        self.assertIn("stateless PowerShell", output)
+        self.assertIn("require --exec-method winrm", output)
+
     def test_cli_returns_failure_for_transport_setup_error(self):
         parser = MagicMock()
         parser.parse_args.return_value = SimpleNamespace(ts=False, debug=False, timeout="30")
@@ -297,6 +312,7 @@ class TestRuntimeCore(unittest.TestCase):
         with (
             patch("pwnrm.cli.argument_parser", return_value=parser),
             patch("pwnrm.cli.create_transport", return_value=transport),
+            patch("pwnrm.cli.tcp_reachable", return_value=True),
             patch("pwnrm.cli.Runspace") as runspace_type,
             patch("pwnrm.cli.PwnShell", return_value=shell) as shell_type,
             patch("builtins.print"),
@@ -445,6 +461,31 @@ class TestRuntimeCore(unittest.TestCase):
             shell.upload(str(empty))
         commands = [call.args[0] for call in shell.run_sync.call_args_list]
         self.assertTrue(any("WriteAllBytes" in command for command in commands))
+        shell.write_error.assert_not_called()
+
+    def test_stateless_upload_uses_authenticated_smb_and_verifies_hash(self):
+        shell = self._bare_shell()
+        shell.runspace = SimpleNamespace(persistent=False)
+        shell.cwd = r"C:\Users\Administrator"
+        smb = MagicMock()
+        captured = {}
+
+        def put_file(_share, path, reader):
+            captured[path] = reader()
+
+        def get_file(_share, path, callback):
+            callback(captured[path])
+
+        smb.putFile.side_effect = put_file
+        smb.getFile.side_effect = get_file
+        shell._open_authenticated_smb = MagicMock(return_value=smb)
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "payload.bin"
+            source.write_bytes(b"fallback-upload")
+            result = shell.upload(f'"{source}" C:\\Windows\\Temp\\payload.bin')
+        self.assertEqual(result["status"], "completed")
+        smb.rename.assert_called_once()
+        smb.logoff.assert_called_once()
         shell.write_error.assert_not_called()
 
     def test_netrun_restores_console_writers(self):

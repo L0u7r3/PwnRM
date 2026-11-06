@@ -5,13 +5,20 @@ pwnrm.cli — CLI entry point & Dead Reckoning replay dispatcher
 import sys
 import re
 import logging
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 from impacket import version
 from impacket.examples import logger
 
-from .core       import Runspace, create_transport, argument_parser
+from .core       import (
+    Runspace,
+    RemoteExecRunspace,
+    create_transport,
+    argument_parser,
+    tcp_reachable,
+)
 from .shell      import PwnShell
 from .shell.ui   import _BANNER, c, DIM, Y, G, R, BLD
 
@@ -107,6 +114,58 @@ def parse_replay_log(log_path: str) -> list[str]:
     return commands
 
 
+@contextmanager
+def _selected_runspace(transport, args):
+    """Open WinRM or the first working Impacket execution fallback."""
+    timeout = int(getattr(args, "timeout", 30))
+    method = getattr(args, "exec_method", "auto") or "auto"
+    parsed = urlparse(str(getattr(transport, "url", "")))
+    winrm_host = parsed.hostname or _display_host(transport, args)
+    winrm_port = parsed.port or (5986 if parsed.scheme == "https" else 5985)
+
+    if method in {"auto", "winrm"}:
+        should_try_winrm = method == "winrm" or tcp_reachable(
+            winrm_host,
+            winrm_port,
+            min(1.5, timeout),
+        )
+        if should_try_winrm:
+            stack = ExitStack()
+            try:
+                runspace = stack.enter_context(Runspace(transport, timeout))
+            except Exception as exc:
+                stack.close()
+                if method == "winrm":
+                    raise
+                logging.warning(
+                    "WinRM unavailable (%s); evaluating remote execution fallbacks.",
+                    _connection_failure_message(exc, transport, timeout),
+                )
+            else:
+                logging.info("[+] Selected winrm backend (persistent PowerShell runspace)")
+                try:
+                    yield runspace
+                finally:
+                    stack.close()
+                return
+        elif method == "auto":
+            logging.warning(
+                "WinRM endpoint %s:%s is unreachable; evaluating remote execution fallbacks.",
+                winrm_host,
+                winrm_port,
+            )
+
+    fallback_method = "auto" if method == "auto" else method
+    stack = ExitStack()
+    try:
+        runspace = stack.enter_context(
+            RemoteExecRunspace(transport, timeout, method=fallback_method)
+        )
+        yield runspace
+    finally:
+        stack.close()
+
+
 def main() -> int:
     if sys.platform == "win32":
         try:
@@ -141,7 +200,7 @@ def main() -> int:
     tinfo = {"host": display_host, "user": display_user}
 
     try:
-        with Runspace(transport, timeout) as runspace:
+        with _selected_runspace(transport, args) as runspace:
             shell = PwnShell(runspace, target_info=tinfo)
             try:
                 if args.replay:

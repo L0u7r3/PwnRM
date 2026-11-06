@@ -20,6 +20,9 @@ from .transports  import (Transport, BasicTransport, SPNEGOTransport, KerberosTr
 
 
 class Runspace:
+    backend_name = "winrm"
+    persistent = True
+
     def __init__(self, transport: Transport, timeout: int = 30, max_consecutive_timeouts: int = 60):
         self._transport = transport
         self.timeout = timeout

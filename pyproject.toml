@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pwnrm"
 version = "2.1.0"
-description = "WinRM shell and Active Directory assessment toolkit"
+description = "Remote PowerShell and Active Directory assessment toolkit"
 readme = "README.md"
 license = "MIT"
 authors = [

@@ -9,7 +9,8 @@ __version__ = "2.1.0"
 __author__  = "uziii2208"
 
 from .core import (
-    Runspace, create_transport, argument_parser,
+    Runspace, RemoteExecRunspace, RemoteExecError, REMOTE_METHODS,
+    create_transport, argument_parser,
     NTCredential, KrbCredential, TransportError, SPNEGOError,
     Transport, BasicTransport, ClientCertTransport,
     SPNEGOTransport, KerberosTransport, CredSSPTransport, WebSocketTransport,
@@ -25,7 +26,8 @@ __all__ = [
     "NTCredential", "KrbCredential", "TransportError", "SPNEGOError",
     "Transport", "BasicTransport", "ClientCertTransport",
     "SPNEGOTransport", "KerberosTransport", "CredSSPTransport", "WebSocketTransport",
-    "Runspace", "argument_parser", "create_transport",
+    "Runspace", "RemoteExecRunspace", "RemoteExecError", "REMOTE_METHODS",
+    "argument_parser", "create_transport",
     "SessionManager", "SessionNode",
     "Socks5Server", "PortForwarder",
     "LootManager", "OPSECProfile",

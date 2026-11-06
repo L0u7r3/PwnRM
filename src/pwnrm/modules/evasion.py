@@ -32,6 +32,13 @@ class EvasionModule(BaseModule):
             return {"status": "error", "error": "invalid options"}
 
         selected = set(normalized) if normalized else {"amsi", "etw"}
+        if not getattr(getattr(shell, "runspace", None), "persistent", True) and selected.intersection({"amsi", "etw"}):
+            message = (
+                "AMSI/ETW patches require a persistent WinRM process; reconnect with "
+                "--exec-method winrm or select only the edr inventory mode."
+            )
+            shell.write_error(message)
+            return {"status": "error", "error": message}
         shell.write_info(c(M + BLD, "  [*] PwnRM Evasion Suite — applying selected runtime OPSEC controls..."))
 
         # 1. EDR Inspection

