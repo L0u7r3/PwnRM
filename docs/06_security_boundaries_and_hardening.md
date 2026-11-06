@@ -76,11 +76,18 @@ is attempted in `finally`; PwnRM then streams the required hives, parses them
 locally, and verifies immediate removal of the remote staging directory. Raw
 local retention requires the explicit `--download` option.
 
-LSASS dump staging launches the built-in `comsvcs.dll` minidump entry point,
-creates a sensitive remote file, and may be blocked by PPL or endpoint controls.
-Failed/partial output is removed, but a successful dump intentionally remains
-until PwnRM streams it for parsing and verifies its immediate deletion. Raw
-local retention requires the explicit `--download` option.
+The optional SAM/NTDS Mimikatz backend avoids those files but executes a native
+credential tool in memory. NTDS mode uses DRS replication (DCSync), either for
+one `--user` or all directory accounts, and therefore generates directory
+replication traffic and requires the corresponding replication rights.
+
+The default `!creds lsa` path runs an operator-selected credential executor in
+memory through No-Consolation and does not stage a dump. If no compatible
+executor is available, or when `--download`/`--lsa-output` requests a dump,
+PwnRM writes a selective LSASS minidump, compresses it, removes the raw remote
+file, streams and parses the archive, then verifies immediate archive removal.
+PPL or endpoint controls may block either path. Raw local retention requires
+the explicit `--download` option.
 
 No-Consolation executes a native PE loader inside a PowerShell process. An
 invalid payload, missing dependency, or loader incompatibility can terminate

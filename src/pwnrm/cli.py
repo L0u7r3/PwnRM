@@ -30,6 +30,11 @@ def _install_concise_logging() -> None:
             handler.addFilter(_ConciseLoggingFilter())
 
 
+def _configure_dependency_logging(debug: bool) -> None:
+    """Keep pypsrp transport chatter behind the explicit debug switch."""
+    logging.getLogger("pypsrp").setLevel(logging.NOTSET if debug else logging.CRITICAL)
+
+
 def _exception_chain(exc: BaseException):
     seen = set()
     current = exc
@@ -113,6 +118,7 @@ def main() -> int:
     args      = argument_parser().parse_args()
     logger.init(args.ts)
     logging.getLogger().setLevel(logging.DEBUG if args.debug else logging.INFO)
+    _configure_dependency_logging(args.debug)
     if args.debug:
         logging.debug(version.getInstallationPath())
     else:

@@ -88,13 +88,13 @@ but are not the documented interface.
 | `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
 | `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
 | `!entra [full]` | Entra join/PRT status plus accessible WAM/Azure cache-path inventory |
-| `!creds [vault\|dpapi\|decrypt\|history\|browser\|lsa] [--download]` | Credential artifact inventory, DPAPI unprotect, and ephemeral LSASS parsing |
+| `!creds [vault\|dpapi\|decrypt\|history\|browser\|lsa] [--lsa-executor PE] [--lsa-timeout SEC] [--lsa-output PATH] [--download]` | Credential inventory plus fast in-memory LSASS extraction with compact-dump fallback |
 | `!laps [all\|encrypted]` | Legacy and modern Windows LAPS attribute query, including encrypted/DSRM metadata |
 | `!acl [tier0] [--target NAME]` | Targeted or Tier-0 AD DACL inspection |
 | `!token [list\|privs]` | Current privilege and process-token identity inventory |
 | `!bloodhound [--collection METHODS]` | AD graph-oriented reconnaissance summary by collection method |
 | `!lateral` | Bounded IPv4 subnet service scan with optional WSMan authentication probe |
-| `!vss [sam\|ntds] [--download]` | Ephemeral WMI shadow-copy extraction, local secret display, and immediate remote cleanup |
+| `!vss [sam\|lsa\|ntds] [--mimikatz] [--mimikatz-executor PE] [--user USER] [--drive C:] [--download]` | Diskless Mimikatz extraction or ephemeral WMI shadow-copy extraction with immediate cleanup |
 | `!coerce [webdav\|smb\|all] --listener HOST` | Outbound WebDAV and/or SMB UNC authentication probe as the current remote identity |
 | `!evasion [edr\|amsi\|etw]` / `!amsi` | Selected AMSI/ETW in-process patching and EDR/AV inventory |
 | `!adtriage`, `!shares`, `!sessions`, `!sysinfo` | PowerShell 5.1-compatible host and AD reconnaissance |
@@ -151,10 +151,19 @@ survives RunspacePool closure and returns a target PID for later cleanup.
 [runtime documentation](docs/03_evasion_and_runtime_opsec.md#native-and-managed-pe-execution-noconsolation)
 for native/managed and local/remote examples.
 
-SAM, NTDS and LSASS extraction streams raw artifacts into protected operator
-memory, displays decoded credential material, and immediately removes remote
-staging. Raw files are not retained locally unless `--download` is supplied;
-retained files are written mode `0600` under the structured PwnRM loot store.
+SAM and LSA use an in-memory RemoteRegistry fast path by default, while NTDS
+retains ephemeral VSS staging. VSS modes are isolated: `sam` emits only local
+SAM hashes, `lsa` emits cached logons and LSA secrets, and `ntds` emits
+directory credentials. `--mimikatz` instead runs SAM or NTDS extraction through
+No-Consolation without staging a remote file. For large domains,
+`!vss ntds --user DOMAIN\account` implies that backend and performs a
+single-account DCSync. `--mimikatz-executor PE` selects a specific local x64
+Mimikatz executable; otherwise PwnRM uses the configured or standard Exegol
+resource. LSASS follows the same executor-first strategy and falls back to a
+selective compressed minidump parsed by pypykatz. Raw files are retained only
+with `--download` and are written mode `0600` under the structured loot store.
+Bulk fallbacks use authenticated SMB with verified PSRP fallback and live
+progress reporting.
 
 ## Python API
 

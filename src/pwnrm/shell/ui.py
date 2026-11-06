@@ -47,7 +47,9 @@ _COMPLETIONS = [
     "webdav", "smb", "edr", "amsi", "etw", "native", "managed",
     "--quick", "--template", "--ca", "--alt", "--wsus", "--target",
     "--collection", "--subnet", "--ports", "--probe-auth", "--listener",
-    "--port", "--drive", "--file", "--lsa-output", "--download", "--xor", "--remote",
+    "--port", "--drive", "--file", "--lsa-executor", "--lsa-timeout", "--lsa-output",
+    "--mimikatz", "--mimikatz-executor", "--user",
+    "--download", "--xor", "--remote",
     "--capture-output", "--detached", "--timeout",
     # common PS one-liners operators may want fast access to:
     "Get-Process", "Get-Service", "whoami", "ipconfig", "net user",

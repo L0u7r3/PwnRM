@@ -33,6 +33,12 @@ class TestCredsModule(unittest.TestCase):
         parser = patch("pwnrm.modules.creds.parse_lsass_minidump", return_value=["credential-row"])
         self.parse_lsass = parser.start()
         self.addCleanup(parser.stop)
+        extractor = patch(
+            "pwnrm.modules.creds.extract_zip_artifacts",
+            side_effect=lambda _archive, names: {names[0]: bytearray(b"minidump")},
+        )
+        self.extract_archive = extractor.start()
+        self.addCleanup(extractor.stop)
 
     def test_vault_only_selects_vault_section(self):
         shell = shell_mock()
@@ -69,17 +75,35 @@ class TestCredsModule(unittest.TestCase):
         self.assertEqual(result["selected"], ["lsa"])
         self.assertIn("$doLsa = $true", script)
         self.assertIn("pwnrm_lsass_{0}.dmp", script)
-        self.assertIn("comsvcs.dll", script)
+        self.assertIn("PwnRMCompactMiniDump", script)
+        self.assertIn("CompactCredentialDump = 0x00002A01", script)
+        self.assertIn("MiniDumpWriteDump", script)
+        self.assertIn("SeDebugPrivilege", script)
         self.assertIn("Get-FileHash -LiteralPath $dumpPath -Algorithm SHA256", script)
         self.assertIn("PPL/EDR may block access", script)
         self.assertIn("$ErrorActionPreference = 'Stop'", script)
         self.assertIn("-ErrorAction Continue", script)
-        self.assertIn("& $rundll32 $comsvcsEntry MiniDump", script)
-        self.assertIn("MiniDump worker timed out after 180 seconds", script)
-        self.assertNotIn("Start-Process -FilePath $rundll32", script)
+        self.assertIn("CreateEntryFromFile", script)
+        self.assertIn("Compressed transfer archive", script)
+        self.assertNotIn("comsvcs.dll", script)
         self.assertNotIn("Download with: !download", script)
-        shell.delete_remote_path.assert_called_once()
+        self.assertEqual(shell.delete_remote_path.call_count, 2)
         shell.loot_mgr.store_artifact.assert_not_called()
+
+    def test_lsa_executor_uses_fast_in_memory_backend(self):
+        shell = shell_mock()
+        shell.noconsolation.return_value = {"status": "completed", "capture_output": True}
+        result = CredsModule().run(
+            shell,
+            ["lsa", "--lsa-executor", "/opt/mimikatz.exe", "--lsa-timeout", "45"],
+        )
+        self.assertEqual(result["backend"], "memory-executor")
+        self.assertEqual(result["selected"], ["lsa"])
+        command = shell.noconsolation.call_args.args[0]
+        self.assertIn("--capture-output", command)
+        self.assertIn("--timeout 45", command)
+        self.assertIn("sekurlsa::logonpasswords", command)
+        shell.run_with_interrupt.assert_not_called()
 
     def test_lsa_output_requires_lsa_and_absolute_safe_path(self):
         for args in (
@@ -112,12 +136,18 @@ class TestCredsModule(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         shell.run_with_interrupt.assert_not_called()
 
+    def test_lsa_executor_options_require_lsa_mode(self):
+        shell = shell_mock()
+        result = CredsModule().run(shell, ["vault", "--lsa-executor", "/tmp/tool.exe"])
+        self.assertEqual(result["status"], "error")
+        shell.noconsolation.assert_not_called()
+
     def test_lsa_download_retains_dump_and_still_deletes_remote_copy(self):
         shell = shell_mock()
         result = CredsModule().run(shell, ["lsa", "--download"])
         self.assertEqual(result["downloaded"], ["/loot/lsass.dmp"])
         shell.loot_mgr.store_artifact.assert_called_once()
-        shell.delete_remote_path.assert_called_once()
+        self.assertEqual(shell.delete_remote_path.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -71,17 +71,35 @@ method aliases are rejected rather than reporting a fake coercion attempt.
 
 ## VSS staging (`!vss`)
 
-The module creates a `Win32_ShadowCopy` through WMI and selects SAM or NTDS
-explicitly or from the host role. It copies `SYSTEM` plus SAM/SECURITY or
-`ntds.dit` to a random remote temporary directory and reports SHA-256 values.
-The shadow copy is deleted in `finally`, and a cleanup failure is surfaced.
+Explicit `sam` and `lsa` requests use RemoteRegistry by default: only the small
+target hive is buffered over SMB, decoded in memory, and the remote export is
+deleted by Impacket. This avoids transferring the 16 MiB SYSTEM hive and gives
+hashdump-like latency. If RemoteRegistry is unavailable, or when `--download`
+is requested, the module falls back to WMI `Win32_ShadowCopy` staging. `ntds`
+always uses VSS. The default remains host-role selection.
 
-The staged directory is streamed into operator memory, decoded with Impacket,
-and removed immediately after processing. Extracted credential material is
-printed in the shell. Add `--download` to retain protected raw artifacts in the
-local PwnRM loot store; remote cleanup remains mandatory. This still performs
-brief disk staging even though it avoids launching `vssadmin.exe` or
-`ntdsutil.exe`.
+SAM and NTDS also expose a fully diskless Mimikatz backend:
+
+```text
+!vss sam --mimikatz
+!vss ntds --mimikatz
+!vss ntds --user INLANEFREIGHT\beth.richards
+!vss ntds --user beth.richards --mimikatz-executor /path/mimikatz.exe
+```
+
+The SAM form runs `lsadump::sam` after an in-memory token elevation. The NTDS
+form uses DCSync; `--user` implies Mimikatz and requests only that account,
+avoiding a full-domain extraction. With no `--user`, `--mimikatz` requests all
+accounts in CSV mode. Neither form creates a remote dump, so `--download` is
+intentionally incompatible with this backend.
+
+The staged directory is compressed, streamed into operator memory through an
+authenticated SMB fast path when available (with verified PSRP fallback),
+decoded with Impacket, and removed immediately after processing. Extracted
+credential material is printed in the shell. Add `--download` to retain
+protected raw artifacts in the local PwnRM loot store; remote cleanup remains
+mandatory. This still performs brief disk staging even though it avoids
+launching `vssadmin.exe` or `ntdsutil.exe`.
 
 ## Playbooks (`!playbook`)
 

@@ -4,6 +4,7 @@ import hashlib
 import base64
 import io
 import logging
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -15,6 +16,7 @@ import pwnrm.cli as cli
 from pwnrm.core.runspace import Runspace
 from pwnrm.core.tunnel import PortForwarder
 from pwnrm.core.api import argument_parser
+from pwnrm.core.credentials import KrbCredential
 from pwnrm.shell.ctrlc import CtrlCHandler
 from pwnrm.shell.pwnshell import COMMAND_REGISTRY, PwnShell
 
@@ -23,10 +25,15 @@ class TestRuntimeCore(unittest.TestCase):
     def test_remote_file_memory_stream_verifies_hash_without_writing_disk(self):
         shell = object.__new__(PwnShell)
         shell.last_run_errors = []
-        shell.run_sync = MagicMock(side_effect=[r"C:\Temp\dump.bin", "False"])
-        shell._transfer_chunk_size = MagicMock(return_value=4096)
         payload = b"sensitive-dump"
         trailer = hashlib.sha256(payload).hexdigest().upper().encode()
+        shell.run_sync = MagicMock(side_effect=[
+            r"C:\Temp\dump.bin",
+            "False",
+            f"{len(payload)}\n{trailer.decode()}",
+        ])
+        shell._transfer_chunk_size = MagicMock(return_value=4096)
+        shell.write_progress = MagicMock()
 
         def stream(_script, handler):
             handler({"stdout": base64.b64encode(payload).decode()})
@@ -44,6 +51,91 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertTrue(shell.delete_remote_path(r"C:\Temp\pwnrm", recursive=True))
         self.assertIn("-Recurse", shell.run_sync.call_args.args[0])
 
+    def test_large_remote_file_prefers_smb_fast_path(self):
+        shell = object.__new__(PwnShell)
+        shell.last_run_errors = []
+        payload = bytearray(b"x" * (256 * 1024))
+        digest = hashlib.sha256(payload).hexdigest().upper()
+        shell.run_sync = MagicMock(side_effect=[
+            r"C:\Temp\dump.bin",
+            "False",
+            f"{len(payload)}\n{digest}",
+        ])
+        shell._read_remote_file_smb = MagicMock(return_value=payload)
+        result = shell.read_remote_file(r"C:\Temp\dump.bin")
+        self.assertIs(result, payload)
+        shell._read_remote_file_smb.assert_called_once()
+
+    @patch("impacket.smbconnection.SMBConnection")
+    def test_smb_fast_path_strips_file_uri_for_impacket(self, smb_cls):
+        payload = b"bulk-data"
+        digest = hashlib.sha256(payload).hexdigest().upper().encode()
+        creds = KrbCredential(
+            "INLANEFREIGHT.LOCAL",
+            "Administrator",
+            ticket=None,
+            tgskey=None,
+            ccache="FILE:/tmp/operator.ccache",
+        )
+        shell = object.__new__(PwnShell)
+        shell.runspace = SimpleNamespace(
+            _transport=SimpleNamespace(creds=creds, url="http://dc01:5985/wsman"),
+            timeout=30,
+        )
+        shell.target_info = {"host": "dc01"}
+        shell.write_progress = MagicMock()
+        smb = smb_cls.return_value
+        smb.kerberosLogin.side_effect = lambda *_args, **_kwargs: self.assertEqual(
+            os.environ["KRB5CCNAME"], "/tmp/operator.ccache"
+        )
+        smb.getFile.side_effect = lambda _share, _path, callback: callback(payload)
+
+        with patch.dict(os.environ, {"KRB5CCNAME": "operator-original"}):
+            result = shell._read_remote_file_smb(
+                r"C:\Temp\dump.bin",
+                len(payload),
+                digest,
+                1024,
+            )
+            self.assertEqual(os.environ["KRB5CCNAME"], "operator-original")
+
+        self.assertEqual(result, bytearray(payload))
+        self.assertEqual(smb.kerberosLogin.call_args.kwargs["useCache"], True)
+        self.assertEqual(smb.getFile.call_args.args[:2], ("C$", r"Temp\dump.bin"))
+
+    def test_psrp_transfer_rejects_length_mismatch_even_with_matching_trailer(self):
+        shell = object.__new__(PwnShell)
+        shell.last_run_errors = []
+        payload = b"short"
+        digest = hashlib.sha256(payload).hexdigest().upper().encode()
+        shell.run_sync = MagicMock(side_effect=[
+            r"C:\Temp\dump.bin",
+            "False",
+            f"99\n{digest.decode()}",
+        ])
+        shell._transfer_chunk_size = MagicMock(return_value=4096)
+        shell.write_progress = MagicMock()
+
+        def stream(_script, handler):
+            handler({"stdout": base64.b64encode(payload).decode()})
+            handler({"stdout": base64.b64encode(digest).decode()})
+            return False
+
+        shell.run_with_interrupt = stream
+        with self.assertRaisesRegex(OSError, "length mismatch"):
+            shell.read_remote_file(r"C:\Temp\dump.bin")
+
+    def test_pypsrp_info_chatter_is_hidden_without_debug(self):
+        logger = logging.getLogger("pypsrp")
+        previous = logger.level
+        try:
+            cli._configure_dependency_logging(False)
+            self.assertEqual(logger.level, logging.CRITICAL)
+            cli._configure_dependency_logging(True)
+            self.assertEqual(logger.level, logging.NOTSET)
+        finally:
+            logger.setLevel(previous)
+
     def test_interactive_help_registry_is_current_and_truthful(self):
         rendered = "\n".join(
             f"{section}\n{syntax}\n{description}"
@@ -57,8 +149,13 @@ class TestRuntimeCore(unittest.TestCase):
         self.assertIn("!evasion [edr|amsi|etw]", rendered)
         self.assertIn("[--remote] [--timeout SEC]", rendered)
         self.assertIn("--lsa-output PATH", rendered)
-        self.assertIn("!vss [sam|ntds] [--drive C:] [--download]", rendered)
-        self.assertIn("[--lsa-output PATH] [--download]", rendered)
+        self.assertIn(
+            "!vss [sam|lsa|ntds] [--mimikatz] [--mimikatz-executor PE] "
+            "[--user USER] [--drive C:] [--download]",
+            rendered,
+        )
+        self.assertIn("Diskless Mimikatz or ephemeral VSS", rendered)
+        self.assertIn("[--lsa-executor PE] [--lsa-timeout SEC] [--lsa-output PATH] [--download]", rendered)
         for dashed_mode in ("--vault", "--lsa]", "--roast", "--native", "--edr", "--tier0"):
             self.assertNotIn(dashed_mode, rendered)
         self.assertNotIn("In-band SOCKS5 proxy", rendered)
@@ -68,8 +165,16 @@ class TestRuntimeCore(unittest.TestCase):
 
     def test_cli_help_uses_the_same_mode_option_convention(self):
         epilog = argument_parser().epilog
-        self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH] [--download]", epilog)
+        self.assertIn(
+            "!creds [vault|dpapi|decrypt B64|history|browser|lsa] "
+            "[--lsa-executor PE] [--lsa-timeout SEC] [--lsa-output PATH] [--download]",
+            epilog,
+        )
         self.assertIn("!noconsolation [native|managed] [--capture-output|--detached]", epilog)
+        self.assertIn(
+            "!vss [sam|lsa|ntds] [--mimikatz] [--mimikatz-executor PE] [--user USER]",
+            epilog,
+        )
         self.assertIn("!playbook [list|run <name>|run --file PATH]", epilog)
         self.assertNotIn("[--roast|--asrep", epilog)
         self.assertNotIn("[--native|--managed]", epilog)

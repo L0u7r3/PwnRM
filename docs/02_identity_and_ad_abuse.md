@@ -94,7 +94,9 @@ Selectors are independently usable:
 - `history`: recent PowerShell console history;
 - `browser`: Chrome, Edge, and Brave credential database locations;
 - `decrypt BASE64`: `CryptUnprotectData` as the current remote user;
-- `lsa`: create, parse, and immediately remove an ephemeral LSASS minidump;
+- `lsa`: use an available in-memory credential executor, with a compact
+  minidump/pypykatz fallback;
+- `lsa --lsa-executor /path/tool.exe`: select a local x64 executor PE;
 - `lsa --lsa-output C:\absolute\path.dmp`: choose the temporary remote path;
 - `lsa --download`: additionally retain the raw dump in the local loot store.
 
@@ -104,11 +106,14 @@ inventory does not imply that the underlying secret was decrypted.
 
 LSASS extraction requires an administrator context with the necessary process
 access (normally `SeDebugPrivilege`). Protected Process Light and endpoint
-controls can still block it. On success PwnRM streams the dump into memory,
-parses it with pypykatz, displays credential rows, zeroes its buffer, and
-verifies deletion of the remote dump. `--download` stores a protected local raw
-copy but never leaves the remote copy in place. Partial dumps and their exact
-`rundll32` workers are removed on failure or timeout.
+controls can still block it. PwnRM automatically uses the operator's
+`PWNRM_LSA_EXECUTOR`, a `mimikatz.exe` on `PATH`, or the standard Exegol x64
+Mimikatz resource when present. The PE runs through the in-memory
+No-Consolation loader and its output is captured; no dump is staged. If no
+executor exists, PwnRM creates a selective credential minidump, compresses and
+parses it with pypykatz, zeroes its buffers, and verifies remote deletion.
+`--download` deliberately selects that dump backend and stores a protected
+local raw copy while still deleting the remote copy.
 
 ## Entra (`!entra`)
 
