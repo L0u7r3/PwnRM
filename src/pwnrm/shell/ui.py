@@ -32,7 +32,8 @@ _BANNER = rf"""
 
 # ── Tab-completion word list ──────────────────────────────────────────────────
 _COMPLETIONS = [
-    "!session", "!socks", "!portfwd", "!ligolo",
+    "!session", "!socks", "!portfwd", "!ligolo", "!jobs", "!ticket",
+    "!tickets", "!capabilities",
     "!module", "!adcs", "!kerberos", "!entra", "!creds", "!token",
     "!laps", "!acl", "!vss", "!coerce",
     "!bloodhound", "!lateral", "!playbook", "!loot", "!opsec", "!evasion",
@@ -40,7 +41,8 @@ _COMPLETIONS = [
     "!revshell", "!log", "!stoplog", "!adtriage", "!shares",
     "!sessions", "!sysinfo", "!help", "exit", "quit",
     # canonical command modes and long options:
-    "list", "run", "switch", "save", "exec-all", "stop", "status",
+    "list", "run", "start", "fetch", "restart", "cleanup", "profile",
+    "inspect", "use", "renew", "output", "switch", "save", "exec-all", "stop", "status",
     "roast", "asrep", "rbcd", "dmsa", "diamond", "full",
     "vault", "dpapi", "decrypt", "history", "browser", "lsa",
     "all", "encrypted", "tier0", "privs", "sam", "ntds",

@@ -11,12 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `!jobs` with persistent detached-PID tracking, runspace output retrieval,
+  status, stop, and cleanup operations.
+- Add `!ticket`/`!tickets` for local ccache inventory, explicit cache selection,
+  and TGT renewal without ticket injection or forging.
+- Add `!capabilities` and `!help COMMAND` with per-command backend, privilege,
+  artifact, and operational-risk metadata.
+- Expand `!ligolo` into a multi-agent manager with checksum-verified official
+  downloads, architecture selection, TLS connection profiles, lifecycle
+  status, stop, restart, and cleanup.
 - Add explicit `-P` / `--protocol` selection for `auto`, WinRM, WMI, DCOM,
   Task Scheduler, SMBExec, and PsExec, with short names and compatibility for
   the former `--exec-method` interface.
 
 ### Fixed
 
+- Preserve detached-process identity metadata when classifying Ligolo jobs,
+  reject recycled PIDs before termination, and suppress `WaitForExit` status
+  noise during job cleanup.
+- Keep Task Scheduler staging names constrained to their CSPRNG token at the
+  command sink and use `secrets` directly for PsExec pipe identifiers.
 - Print the PwnRM banner only once, stop dumping the full command list when an
   interactive connection opens, and expose that list explicitly through
   `!help`.

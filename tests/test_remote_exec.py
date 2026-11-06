@@ -97,6 +97,9 @@ class TestRemoteExecBackend(unittest.TestCase):
         self.assertTrue(uploaded.startswith(b"\xef\xbb\xbf"))
         self.assertIn("1> %SystemRoot%", backend.launched)
         self.assertNotIn("1^>", backend.launched)
+        names = re.findall(r"pwnrm_([0-9a-f]{20})\.(?:ps1|out)", backend.launched)
+        self.assertEqual(len(names), 2)
+        self.assertEqual(names[0], names[1])
         self.assertEqual(len(backend.smb.deleted), 2)
 
     def test_wmi_accepts_iwbem_property_object_response(self):

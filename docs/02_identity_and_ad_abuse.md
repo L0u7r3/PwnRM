@@ -51,6 +51,18 @@ Selectors restrict the LDAP reconnaissance performed:
 The module enumerates candidates. It does not request AS-REPs/TGSs, crack
 material, modify delegation, or forge a Diamond ticket.
 
+## Operator ticket manager (`!ticket`)
+
+`!ticket list [CCACHE]` and `!ticket inspect [INDEX] [CCACHE]` parse the local
+MIT ccache and show the client/server principal, encryption type, flags, start,
+expiry, and renewal time. `!ticket use CCACHE` selects the operator default for
+future connections; it does not re-authenticate an already-open backend.
+`!ticket renew [CCACHE]` uses `kinit -R` only for a cache containing a TGT and
+rejects service-ticket-only S4U caches.
+
+The alias `!tickets` is accepted, but `!ticket` is the documented command. No
+subcommand performs ticket injection, service-ticket requests, or forging.
+
 ## Windows LAPS (`!laps`)
 
 The module queries computer objects for:

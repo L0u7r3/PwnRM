@@ -142,7 +142,10 @@ class TestRuntimeCore(unittest.TestCase):
             for section, commands in COMMAND_REGISTRY.items()
             for syntax, description in commands.items()
         )
-        self.assertIn("!ligolo [--remote] AGENT [ARG..]", rendered)
+        self.assertIn("!ligolo [start|fetch|list|status|stop|restart|cleanup|profile]", rendered)
+        self.assertIn("!jobs [list|status ID|output ID|stop ID|cleanup]", rendered)
+        self.assertIn("!ticket [list|inspect|use|renew]", rendered)
+        self.assertIn("!capabilities [COMMAND]", rendered)
         self.assertIn("!noconsolation [native|managed] [--capture-output|--detached]", rendered)
         self.assertIn("!creds [vault|dpapi|decrypt B64|history|browser|lsa]", rendered)
         self.assertIn("!kerberos [roast|asrep|rbcd|dmsa|diamond]", rendered)
@@ -225,7 +228,7 @@ class TestRuntimeCore(unittest.TestCase):
         result = shell.repl(inputs=["!help"])
 
         self.assertEqual(result, {"status": "help"})
-        shell.help.assert_called_once_with()
+        shell.help.assert_called_once_with("")
 
     @patch("builtins.print")
     def test_interactive_startup_prints_one_banner_and_not_help(self, print_mock):

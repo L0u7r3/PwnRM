@@ -116,7 +116,10 @@ but are not the documented interface.
 | `!session list\|switch\|save\|exec-all` | Session inventory, switching, encrypted same-process metadata snapshot, concurrent command fan-out |
 | `!socks [PORT\|stop\|status]` | Direct local RFC 1928 CONNECT proxy; outbound connections originate from the operator host |
 | `!portfwd LPORT RHOST:RPORT` | Direct operator-side TCP forward; use `list` or `stop <ID\|all>` to manage it |
-| `!ligolo [--remote] AGENT [ARG..]` | Launch an operator-supplied Windows Ligolo-ng agent in memory inside a detached target process |
+| `!ligolo start\|fetch\|list\|status\|stop\|restart\|cleanup\|profile` | Fetch a checksum-verified official agent, manage connection/TLS profiles, and track multiple detached in-memory agents |
+| `!jobs list\|status\|output\|stop\|cleanup` | Track runspace and independent-process jobs; detached PID metadata survives PwnRM reconnection |
+| `!ticket list\|inspect\|use\|renew` | Inspect local ccache principals, SPNs, encryption and lifetime; select a default cache or renew a TGT |
+| `!capabilities [COMMAND]` | Show current-backend availability, required privilege, artifacts, and operational risk |
 | `!module list\|run <name>` | Built-in and permission-checked external module registry |
 | `!adcs` | Enterprise CA health, template publication/prerequisite/ACL, and optional WSUS policy triage |
 | `!kerberos` | SPN/AS-REP candidate, RBCD, dMSA, and Diamond prerequisite reconnaissance |
@@ -137,9 +140,10 @@ but are not the documented interface.
 | `!revshell IPv4 PORT` | Raw IPv4 reverse command shell |
 | `!playbook [list\|run NAME\|run --file PATH]` | Validated JSON/built-in sequential automation with conditions and cleanup hooks |
 | `!loot`, `!opsec`, `!log`, `!stoplog` | Local artifact inventory, jitter profile, and transcript controls |
-| `!help` | Display the complete interactive command list and current syntax |
+| `!help [COMMAND]` | Display the complete command list or detailed requirements for one command |
 
-Run `pwnrm -h` or `!help` inside the shell for the current syntax. PwnRM does
+Run `pwnrm -h`, `!help`, or `!help COMMAND` inside the shell for current syntax
+and requirements. PwnRM does
 not print the full command list automatically when a session opens.
 
 ## Important capability boundaries
@@ -186,6 +190,18 @@ survives RunspacePool closure and returns a target PID for later cleanup.
 `--detached` and output capture are mutually exclusive. See the
 [runtime documentation](docs/03_evasion_and_runtime_opsec.md#native-and-managed-pe-execution-noconsolation)
 for native/managed and local/remote examples.
+
+`!jobs` assigns a short operator job ID to background and detached launches.
+Runspace jobs expose their output after completion. Detached jobs deliberately
+have no captured output, but their target PID and status are persisted in a
+mode-`0600` local registry without payload arguments. `!jobs stop ID` only
+targets a PID or runspace job previously registered by PwnRM, and validates a
+detached process's creation timestamp before stopping it to reject PID reuse.
+
+`!ticket use PATH` changes the operator default ccache but cannot replace the
+identity of an already authenticated connection; reconnect to use it for
+authentication. `!ticket renew` invokes `kinit -R` only when the selected cache
+contains a TGT. It does not request, inject, or forge tickets.
 
 SAM and LSA use an in-memory RemoteRegistry fast path by default, while NTDS
 retains ephemeral VSS staging. VSS modes are isolated: `sam` emits only local

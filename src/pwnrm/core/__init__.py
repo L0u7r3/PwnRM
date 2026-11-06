@@ -12,6 +12,10 @@ from .session_mgr import SessionManager, SessionNode
 from .tunnel import Socks5Server, PortForwarder
 from .loot import LootManager
 from .opsec import OPSECProfile
+from .jobs import JobRecord, JobRegistry
+from .tickets import CacheInfo, TicketEntry, TicketManager
+from .capabilities import CommandCapability, COMMAND_CAPABILITIES, get_capability
+from .ligolo import LigoloAssetManager
 
 __all__ = [
     "NTCredential", "KrbCredential", "TransportError", "SPNEGOError",
@@ -22,4 +26,8 @@ __all__ = [
     "SessionManager", "SessionNode",
     "Socks5Server", "PortForwarder",
     "LootManager", "OPSECProfile",
+    "JobRecord", "JobRegistry",
+    "CacheInfo", "TicketEntry", "TicketManager",
+    "CommandCapability", "COMMAND_CAPABILITIES", "get_capability",
+    "LigoloAssetManager",
 ]

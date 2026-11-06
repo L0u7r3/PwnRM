@@ -21,7 +21,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from html import escape as xml_escape
 from io import BytesIO
-from random import SystemRandom
 from typing import Any, Generator
 from urllib.parse import urlparse
 
@@ -284,8 +283,8 @@ class _Backend:
             command = (
                 "cmd.exe /Q /D /C powershell.exe -NoLogo -NoProfile -NonInteractive "
                 "-ExecutionPolicy Bypass -File "
-                f"%SystemRoot%\\Temp\\{script_name} "
-                f"1> %SystemRoot%\\Temp\\{output_name} 2>&1"
+                f"%SystemRoot%\\Temp\\pwnrm_{token}.ps1 "
+                f"1> %SystemRoot%\\Temp\\pwnrm_{token}.out 2>&1"
             )
             self.launch(command)
             return self._read_output(output_relative, footer.encode("ascii"))
@@ -690,7 +689,6 @@ class _PsExecBackend(_Backend):
         super().__init__(auth, timeout)
         self._installer: Any = None
         self._tree: Any = None
-        self._random = SystemRandom()
 
     def connect(self) -> None:
         self.smb = self.auth.connect_smb(self.timeout)
@@ -735,8 +733,8 @@ class _PsExecBackend(_Backend):
         handles = [main]
         try:
             packet = _RemComMessage()
-            machine = "".join(self._random.choice(string.ascii_letters) for _ in range(6))
-            process_id = self._random.randrange(1000, 2**31 - 1)
+            machine = "".join(secrets.choice(string.ascii_letters) for _ in range(6))
+            process_id = 1000 + secrets.randbelow((2**31 - 1) - 1000)
             packet["Machine"] = machine
             packet["WorkingDir"] = "C:\\Windows\\System32"
             packet["Command"] = command

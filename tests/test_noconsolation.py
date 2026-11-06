@@ -177,7 +177,11 @@ class TestNoConsolationShell(unittest.TestCase):
     def test_detached_runner_uses_wmi_and_an_in_memory_named_pipe(self):
         shell = object.__new__(PwnShell)
         shell._stage_runspace_bytes = MagicMock(side_effect=["Stage0", "Stage1"])
-        shell.run_with_interrupt = MagicMock(return_value=False)
+        def execute(script, handler):
+            marker = re.search(r"(__PWNRM_DETACHED__:[0-9a-f]+):\$DetachedPid", script).group(1)
+            handler({"stdout": f"{marker}:4242:638980000000000000\n"})
+            return False
+        shell.run_with_interrupt = MagicMock(side_effect=execute)
         shell.write_line = MagicMock()
         result = shell._run_detached_memory(
             blobs=[b"payload", b"arguments"],
@@ -187,6 +191,8 @@ class TestNoConsolationShell(unittest.TestCase):
             execute="    [void]$Loaded\n",
         )
         self.assertTrue(result["detached"])
+        self.assertEqual(result["pid"], 4242)
+        self.assertEqual(result["process_start_ticks"], 638980000000000000)
         script = shell.run_with_interrupt.call_args.args[0]
         self.assertIn("NamedPipeServerStream", script)
         self.assertIn("Invoke-CimMethod -ClassName Win32_Process", script)
@@ -200,6 +206,7 @@ class TestNoConsolationShell(unittest.TestCase):
     def test_ligolo_alias_forces_detached_native_execution(self):
         shell = object.__new__(PwnShell)
         shell.write_warning = MagicMock()
+        shell.runspace = SimpleNamespace(persistent=True)
         shell.noconsolation = MagicMock(return_value={"status": "completed"})
         result = shell.ligolo(r'--remote "C:\Program Files\agent.exe" -connect 192.0.2.10:11601 -ignore-cert')
         self.assertEqual(result["status"], "completed")

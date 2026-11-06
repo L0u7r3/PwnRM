@@ -99,10 +99,13 @@ must be stopped by PID; this is process independence, not reboot persistence.
 The process creation, encoded bootstrap command line, named-pipe traffic, and
 network activity remain visible to endpoint telemetry.
 
-`!ligolo` is a thin detached-launch alias and does not establish trust in a
-third-party agent binary. PwnRM neither pins nor downloads Ligolo-ng on the
-operator's behalf; the operator is responsible for source, build provenance,
-proxy configuration, certificates, and routes.
+`!ligolo fetch` downloads only official Ligolo-ng release assets, verifies the
+archive against that release's checksum file, safely extracts the single
+`agent.exe`, and stores it with operator-only permissions. This validates
+release integrity, not the upstream source or binary itself. Operators remain
+responsible for upstream trust, proxy configuration, profiles, and routes.
+Connection profiles and detached PID records are local mode-`0600` metadata;
+payload arguments are intentionally not persisted.
 
 ## Network side effects
 
